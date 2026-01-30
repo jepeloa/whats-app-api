@@ -72,32 +72,91 @@ ${data.ubicaciones.length > 1 ? `Ubicaciones de descarga:\n${ubicacionesList}` :
 
     const deliveredLocations = delivery.locations
       .filter((l) => l.status === 'delivered')
-      .map((l) => `- ${l.nombre}: ${l.direccion}`)
+      .map((l) => `- ${l.nombre}: ${l.direccion} (${l.kilosDescargados?.toLocaleString('es-AR') || '?'} kg)`)
       .join('\n');
 
-    return `Eres un asistente de logística amable y conciso. Estás ayudando al camionero ${delivery.choferNombre} con la pesada #${delivery.idPesada}.
+    // Calcular kilos ya descargados
+    const kilosDescargados = delivery.locations
+      .filter((l) => l.status === 'delivered' && l.kilosDescargados)
+      .reduce((sum, l) => sum + (l.kilosDescargados || 0), 0);
+    const kilosRestantes = delivery.pesoNeto - kilosDescargados;
 
-INFORMACIÓN DEL TRASLADO:
-- Patente: ${delivery.patente}
-- Producto: ${delivery.artNombre}
-- Origen: ${delivery.origen}
-- Peso: ${delivery.pesoNeto} ${delivery.pesoUn}
+    const firstName = delivery.choferNombre.split(' ')[0];
 
-UBICACIONES PENDIENTES DE DESCARGA:
+    return `Eres un asistente de logística. Ayudas al camionero ${firstName} con la pesada #${delivery.idPesada}.
+
+PESO TOTAL A ENTREGAR: ${delivery.pesoNeto.toLocaleString('es-AR')} ${delivery.pesoUn}
+KILOS YA DESCARGADOS: ${kilosDescargados.toLocaleString('es-AR')} kg
+KILOS RESTANTES: ${kilosRestantes.toLocaleString('es-AR')} kg
+
+UBICACIONES PENDIENTES:
 ${pendingLocations || 'Ninguna'}
 
-UBICACIONES YA ENTREGADAS:
-${deliveredLocations || 'Ninguna todavía'}
+UBICACIONES ENTREGADAS:
+${deliveredLocations || 'Ninguna'}
 
-TU TAREA:
-1. Cuando el camionero indique que llegó o que está descargando, pregúntale CUÁL ubicación está descargando si hay más de una pendiente.
-2. Cuando confirme una descarga específica, responde con el siguiente JSON (IMPORTANTE: incluye este JSON en tu respuesta):
-   {"action": "confirm_delivery", "ubicacion": "NOMBRE_EXACTO_DE_LA_UBICACION"}
-3. Sé amable, breve y profesional.
-4. Si el camionero tiene problemas o dudas, ayúdalo y ofrece soporte.
-5. Si todas las ubicaciones fueron entregadas, felicítalo y despídete.
+INSTRUCCIONES CRÍTICAS:
+1. Responde de forma MUY BREVE y amigable (máximo 2 oraciones).
+2. **IMPORTANTE**: Cuando el camionero confirme una entrega, SIEMPRE pregunta cuántos kilos descargó si no lo mencionó.
+3. Si el camionero menciona un problema (accidente, rotura, robo, pérdida, derrame, etc.), registra el problema como observación.
+4. Si quedan ubicaciones pendientes, recuérdale la siguiente ubicación.
+5. **CORRECCIONES**: Si el camionero corrige los kilos de una ubicación ya entregada, usa "update_delivery" para actualizar.
+6. **EL RESTO**: Si dice "el resto", "lo que queda", "todo lo demás", usa kilos: -1 y el sistema calculará automáticamente ${kilosRestantes.toLocaleString('es-AR')} kg.
+7. Valida que los kilos no excedan ${kilosRestantes.toLocaleString('es-AR')} kg restantes.
 
-IMPORTANTE: Solo incluye el JSON cuando el camionero CONFIRME una descarga específica, no cuando solo diga que llegó o está en camino.`;
+FORMATO DE RESPUESTA:
+- Para confirmar entrega CON kilos: mensaje + JSON al final
+- Para preguntar kilos: solo mensaje (sin JSON)
+- Para registrar problema: mensaje + JSON con observacion
+- Para CORREGIR kilos ya reportados: mensaje + JSON con action "update_delivery"
+- Para "el resto": mensaje + JSON con kilos: -1
+
+JSON (va en línea separada precedido por ---JSON---):
+{"action": "confirm_delivery", "ubicacion": "NOMBRE_EXACTO", "kilos": NUMERO_O_-1, "observacion": "OBLIGATORIO si menciona problema"}
+{"action": "update_delivery", "ubicacion": "NOMBRE_EXACTO", "kilos": NUMERO_O_-1, "observacion": "texto opcional"}
+{"action": "report_issue", "observacion": "descripción del problema"}
+
+EJEMPLOS:
+
+Usuario: "Entregué en Aceitera"
+Respuesta: "¡Bien ${firstName}! ¿Cuántos kilos descargaste en Aceitera?"
+
+Usuario: "Entregué 15000 kilos en Aceitera"
+Respuesta: "¡Perfecto ${firstName}! Confirmados 15.000 kg en Aceitera. Avisame cuando llegues a Terminal Puerto Rosario.
+---JSON---
+{"action": "confirm_delivery", "ubicacion": "Aceitera General Deheza", "kilos": 15000}"
+
+Usuario: "Descargué el resto en la terminal"
+Respuesta: "¡Perfecto ${firstName}! Confirmados los ${kilosRestantes.toLocaleString('es-AR')} kg restantes en Terminal Puerto Rosario.
+---JSON---
+{"action": "confirm_delivery", "ubicacion": "Terminal Puerto Rosario", "kilos": -1}"
+
+Usuario: "Bajé 30000 kilos pero tuve un robo en la ruta"
+Respuesta: "Lamento escuchar eso ${firstName}. Confirmados 30.000 kg y registré el robo.
+---JSON---
+{"action": "confirm_delivery", "ubicacion": "Terminal Puerto Rosario", "kilos": 30000, "observacion": "Robo en la ruta"}"
+
+Usuario: "Entregué 25000 en el puerto, me faltaron 5000 por un accidente"
+Respuesta: "Entendido ${firstName}. Confirmados 25.000 kg, registré el accidente.
+---JSON---
+{"action": "confirm_delivery", "ubicacion": "Puerto", "kilos": 25000, "observacion": "Faltaron 5000 kg por accidente"}"
+
+Usuario: "No, en Aceitera eran 16000 kilos"
+Respuesta: "Corregido ${firstName}. Actualicé a 16.000 kg en Aceitera.
+---JSON---
+{"action": "update_delivery", "ubicacion": "Aceitera General Deheza", "kilos": 16000}"
+
+Usuario: "Tuve un accidente, se rompió la bolsa y perdí mercadería"
+Respuesta: "Lamento escuchar eso ${firstName}. ¿Pudiste entregar algo en alguna ubicación? Registré el incidente.
+---JSON---
+{"action": "report_issue", "observacion": "Accidente con rotura de bolsa, pérdida de mercadería"}"
+
+IMPORTANTE: 
+- **SIEMPRE incluye "observacion" en el JSON cuando el camionero mencione: robo, accidente, pérdida, rotura, faltante, problema, derrame, o cualquier incidente.**
+- Para correcciones de ubicaciones YA ENTREGADAS usa "update_delivery", no "confirm_delivery".
+- Si dice "toneladas", multiplica por 1000 para obtener kilos.
+- Si dice "el resto", "lo que queda", "todo", usa kilos: -1 (el sistema calcula los ${kilosRestantes.toLocaleString('es-AR')} kg automáticamente).
+- Detecta frases como "me equivoqué", "en realidad eran", "no, eran", "corrijo" como señales de corrección.`;
   }
 
   /**
@@ -114,11 +173,12 @@ IMPORTANTE: Solo incluye el JSON cuando el camionero CONFIRME una descarga espec
     const remoteJid = this.formatToJid(data.phoneNumber);
 
     // Check if there's already an active delivery for this phone number
+    // Active = pending or in_progress (partial/completed/not_delivered means closed)
     const existingActive = await this.prismaRepository.deliveryTracking.findFirst({
       where: {
         remoteJid,
         instanceId: instance.id,
-        status: { in: ['pending', 'in_progress', 'partial'] },
+        status: { in: ['pending', 'in_progress'] },
       },
     });
 
@@ -267,8 +327,8 @@ IMPORTANTE: Solo incluye el JSON cuando el camionero CONFIRME una descarga espec
       return;
     }
 
-    // Extract message content
-    const content = getConversationMessage(messageRaw.message);
+    // Extract message content - pass the raw message object (not messageRaw.message)
+    const content = getConversationMessage(messageRaw);
     if (!content) {
       return;
     }
@@ -315,18 +375,48 @@ IMPORTANTE: Solo incluye el JSON cuando el camionero CONFIRME una descarga espec
       return;
     }
 
-    // Log AI response
-    await this.logMessage(delivery.id, 'assistant', aiResponse);
+    // Extract clean message (without JSON) for sending to user
+    const { cleanMessage, jsonPart } = this.extractJsonFromResponse(aiResponse);
 
-    // Check if AI response contains a delivery confirmation
-    await this.processAIResponse(delivery, aiResponse, instanceName);
+    // Log full AI response for audit
+    await this.logMessage(delivery.id, 'assistant', cleanMessage);
 
-    // Send response to driver
-    // Remove the JSON from the message before sending
-    const cleanResponse = aiResponse.replace(/\{"action":\s*"confirm_delivery".*?\}/g, '').trim();
-    if (cleanResponse) {
-      await this.sendWhatsAppMessage(instanceName, remoteJid, cleanResponse);
+    // Process JSON action if present
+    if (jsonPart) {
+      await this.processAIResponse(delivery, jsonPart, instanceName);
     }
+
+    // Send clean response to driver (without JSON)
+    if (cleanMessage) {
+      await this.sendWhatsAppMessage(instanceName, remoteJid, cleanMessage);
+    }
+  }
+
+  /**
+   * Extract JSON from AI response (separated by ---JSON---)
+   */
+  private extractJsonFromResponse(response: string): { cleanMessage: string; jsonPart: string | null } {
+    // Check for ---JSON--- separator
+    const jsonSeparator = '---JSON---';
+    const separatorIndex = response.indexOf(jsonSeparator);
+
+    if (separatorIndex !== -1) {
+      const cleanMessage = response.substring(0, separatorIndex).trim();
+      const jsonPart = response.substring(separatorIndex + jsonSeparator.length).trim();
+      return { cleanMessage, jsonPart };
+    }
+
+    // Fallback: try to find JSON inline (old format)
+    const jsonMatch = response.match(/\{"action":\s*"confirm_delivery".*?\}/);
+    if (jsonMatch) {
+      const cleanMessage = response
+        .replace(jsonMatch[0], '')
+        .replace(/```json\s*```/g, '')
+        .trim();
+      return { cleanMessage, jsonPart: jsonMatch[0] };
+    }
+
+    return { cleanMessage: response, jsonPart: null };
   }
 
   /**
@@ -354,44 +444,153 @@ IMPORTANTE: Solo incluye el JSON cuando el camionero CONFIRME una descarga espec
   }
 
   /**
-   * Process AI response to detect delivery confirmations
+   * Process AI response to detect delivery confirmations and issues
    */
   private async processAIResponse(
     delivery: DeliveryTracking & { locations: any[] },
-    aiResponse: string,
+    jsonString: string,
     instanceName: string,
   ) {
     // Try to extract JSON action from response
-    const jsonMatch = aiResponse.match(/\{"action":\s*"confirm_delivery".*?\}/);
+    const jsonMatch = jsonString.match(/\{"action":\s*"(confirm_delivery|update_delivery|report_issue)".*?\}/);
     if (!jsonMatch) {
       return;
     }
 
     try {
       const action = JSON.parse(jsonMatch[0]);
-      if (action.action === 'confirm_delivery' && action.ubicacion) {
-        // Find the location by name (case insensitive)
-        const location = delivery.locations.find(
-          (l) => l.nombre.toLowerCase() === action.ubicacion.toLowerCase() && l.status === 'pending',
+
+      // IMPORTANT: Reload delivery from DB to get current real values
+      const freshDelivery = await this.prismaRepository.deliveryTracking.findUnique({
+        where: { id: delivery.id },
+        include: { locations: { orderBy: { orden: 'asc' } } },
+      });
+
+      if (!freshDelivery) {
+        this.logger.error(`Delivery ${delivery.id} not found when processing action`);
+        return;
+      }
+
+      // Calculate real kilos from DB
+      const kilosYaDescargados = freshDelivery.locations
+        .filter((l) => l.status === 'delivered' && l.kilosDescargados)
+        .reduce((sum, l) => sum + (l.kilosDescargados || 0), 0);
+      const kilosRestantes = freshDelivery.pesoNeto - kilosYaDescargados;
+
+      // Handle issue reports (problems without delivery)
+      if (action.action === 'report_issue' && action.observacion) {
+        await this.addObservacion(freshDelivery.id, action.observacion);
+        this.logger.info(`Issue reported for pesada ${freshDelivery.idPesada}: ${action.observacion}`);
+        return;
+      }
+
+      // Handle delivery update (correction)
+      if (action.action === 'update_delivery' && action.ubicacion) {
+        // Find the location by name (case insensitive, partial match) - already delivered
+        const location = freshDelivery.locations.find(
+          (l) =>
+            (l.nombre.toLowerCase().includes(action.ubicacion.toLowerCase()) ||
+              action.ubicacion.toLowerCase().includes(l.nombre.toLowerCase())) &&
+            l.status === 'delivered',
         );
 
         if (location) {
-          // Mark location as delivered
+          const oldKilos = location.kilosDescargados || 0;
+          let newKilos = action.kilos;
+
+          // Handle "resto" - calculate remaining
+          if (action.kilos === -1 || action.kilos === 'resto') {
+            // For update, calculate what's left considering other locations
+            const otrosKilos = freshDelivery.locations
+              .filter((l) => l.status === 'delivered' && l.kilosDescargados && l.id !== location.id)
+              .reduce((sum, l) => sum + (l.kilosDescargados || 0), 0);
+            newKilos = freshDelivery.pesoNeto - otrosKilos;
+          }
+
+          // Update the location
+          await this.prismaRepository.deliveryLocation.update({
+            where: { id: location.id },
+            data: {
+              kilosDescargados: newKilos,
+              notes: action.observacion || location.notes,
+            },
+          });
+
+          this.logger.info(
+            `Location ${location.nombre} updated for pesada ${freshDelivery.idPesada}: ${oldKilos} kg -> ${newKilos} kg`,
+          );
+
+          // Log the correction
+          await this.logMessage(
+            freshDelivery.id,
+            'system',
+            `Corrección en "${location.nombre}": ${oldKilos.toLocaleString('es-AR')} kg → ${newKilos.toLocaleString('es-AR')} kg`,
+          );
+
+          // Add observacion if provided
+          if (action.observacion) {
+            await this.addObservacion(freshDelivery.id, `${location.nombre} (corrección): ${action.observacion}`);
+          }
+        }
+        return;
+      }
+
+      // Handle delivery confirmation
+      if (action.action === 'confirm_delivery' && action.ubicacion) {
+        let kilosToDeliver = action.kilos;
+
+        // Handle "resto" - deliver remaining kilos
+        if (action.kilos === -1 || action.kilos === 'resto') {
+          kilosToDeliver = kilosRestantes;
+          this.logger.info(`Auto-calculating "resto": ${kilosRestantes} kg for pesada ${freshDelivery.idPesada}`);
+        }
+
+        // Validate kilos
+        if (kilosToDeliver !== undefined && kilosToDeliver > kilosRestantes) {
+          this.logger.warn(
+            `Kilos exceden el límite: ${kilosToDeliver} > ${kilosRestantes} restantes para pesada ${freshDelivery.idPesada}`,
+          );
+        }
+
+        // Find the location by name (case insensitive, partial match)
+        const location = freshDelivery.locations.find(
+          (l) =>
+            (l.nombre.toLowerCase().includes(action.ubicacion.toLowerCase()) ||
+              action.ubicacion.toLowerCase().includes(l.nombre.toLowerCase())) &&
+            l.status === 'pending',
+        );
+
+        if (location) {
+          // Mark location as delivered with kilos
           await this.prismaRepository.deliveryLocation.update({
             where: { id: location.id },
             data: {
               status: 'delivered',
               deliveredAt: new Date(),
+              kilosDescargados: kilosToDeliver || null,
+              notes: action.observacion || null,
             },
           });
 
-          this.logger.info(`Location ${location.nombre} marked as delivered for pesada ${delivery.idPesada}`);
+          this.logger.info(
+            `Location ${location.nombre} marked as delivered for pesada ${freshDelivery.idPesada} with ${kilosToDeliver || '?'} kg`,
+          );
 
           // Log the confirmation
-          await this.logMessage(delivery.id, 'system', `Ubicación "${location.nombre}" marcada como entregada.`);
+          const kilosText = kilosToDeliver ? ` (${kilosToDeliver.toLocaleString('es-AR')} kg)` : '';
+          await this.logMessage(
+            freshDelivery.id,
+            'system',
+            `Ubicación "${location.nombre}" marcada como entregada${kilosText}.`,
+          );
+
+          // Add observacion if provided
+          if (action.observacion) {
+            await this.addObservacion(freshDelivery.id, `${location.nombre}: ${action.observacion}`);
+          }
 
           // Check if all locations are delivered
-          await this.checkDeliveryComplete(delivery.id, instanceName);
+          await this.checkDeliveryComplete(freshDelivery.id, instanceName);
         }
       }
     } catch (error) {
@@ -400,13 +599,35 @@ IMPORTANTE: Solo incluye el JSON cuando el camionero CONFIRME una descarga espec
   }
 
   /**
-   * Check if all locations are delivered and update delivery status
+   * Add observation to delivery tracking
    */
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  private async checkDeliveryComplete(deliveryId: string, _instanceName: string) {
+  private async addObservacion(deliveryId: string, observacion: string) {
     const delivery = await this.prismaRepository.deliveryTracking.findUnique({
       where: { id: deliveryId },
-      include: { locations: true, messages: true },
+    });
+
+    if (!delivery) return;
+
+    const timestamp = new Date().toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' });
+    const newObs = `[${timestamp}] ${observacion}`;
+    const currentObs = delivery.observaciones || '';
+    const updatedObs = currentObs ? `${currentObs}\n${newObs}` : newObs;
+
+    await this.prismaRepository.deliveryTracking.update({
+      where: { id: deliveryId },
+      data: { observaciones: updatedObs },
+    });
+
+    await this.logMessage(deliveryId, 'system', `Observación registrada: ${observacion}`);
+  }
+
+  /**
+   * Check if all locations are delivered and update delivery status
+   */
+  private async checkDeliveryComplete(deliveryId: string, instanceName: string) {
+    const delivery = await this.prismaRepository.deliveryTracking.findUnique({
+      where: { id: deliveryId },
+      include: { locations: { orderBy: { orden: 'asc' } }, messages: true },
     });
 
     if (!delivery) return;
@@ -415,11 +636,12 @@ IMPORTANTE: Solo incluye el JSON cuando el camionero CONFIRME una descarga espec
 
     if (pendingLocations.length === 0) {
       // All locations delivered - mark as completed
+      const confirmedAt = new Date();
       await this.prismaRepository.deliveryTracking.update({
         where: { id: deliveryId },
         data: {
           status: 'completed',
-          confirmedAt: new Date(),
+          confirmedAt,
         },
       });
 
@@ -428,9 +650,109 @@ IMPORTANTE: Solo incluye el JSON cuando el camionero CONFIRME una descarga espec
       // Log completion
       await this.logMessage(deliveryId, 'system', 'Todas las ubicaciones fueron entregadas. Pesada completada.');
 
+      // Send WhatsApp summary
+      const summaryMessage = this.buildCompletionSummary(delivery, confirmedAt);
+      await this.sendWhatsAppMessage(instanceName, delivery.remoteJid, summaryMessage);
+      await this.logMessage(deliveryId, 'assistant', summaryMessage);
+
       // Send completion email
       await this.emailService.sendDeliveryCompletedEmail(delivery, 'completed');
     }
+  }
+
+  /**
+   * Build completion summary message with times and details
+   */
+  private buildCompletionSummary(
+    delivery: {
+      idPesada: string;
+      choferNombre: string;
+      patente: string;
+      artNombre: string;
+      origen: string;
+      pesoNeto: number;
+      pesoUn: string;
+      createdAt: Date;
+      observaciones?: string | null;
+      locations: Array<{
+        nombre: string;
+        direccion: string;
+        deliveredAt: Date | null;
+        kilosDescargados?: number | null;
+        notes?: string | null;
+        orden: number;
+      }>;
+    },
+    confirmedAt: Date,
+  ): string {
+    const startTime = new Date(delivery.createdAt);
+    const totalMinutes = Math.round((confirmedAt.getTime() - startTime.getTime()) / (1000 * 60));
+    const totalHours = Math.floor(totalMinutes / 60);
+    const remainingMinutes = totalMinutes % 60;
+
+    // Calculate total kilos delivered
+    const totalKilosDescargados = delivery.locations
+      .filter((l) => l.deliveredAt && l.kilosDescargados)
+      .reduce((sum, l) => sum + (l.kilosDescargados || 0), 0);
+
+    let summary = `📋 *RESUMEN DE ENTREGA COMPLETADA*\n\n`;
+    summary += `✅ *Pesada:* ${delivery.idPesada}\n`;
+    summary += `🚚 *Chofer:* ${delivery.choferNombre}\n`;
+    summary += `🔢 *Patente:* ${delivery.patente}\n`;
+    summary += `📦 *Producto:* ${delivery.artNombre}\n`;
+    summary += `📍 *Origen:* ${delivery.origen}\n`;
+    summary += `⚖️ *Peso cargado:* ${delivery.pesoNeto.toLocaleString('es-AR')} ${delivery.pesoUn}\n`;
+    summary += `⚖️ *Total descargado:* ${totalKilosDescargados.toLocaleString('es-AR')} kg\n\n`;
+
+    summary += `📍 *DESCARGAS POR UBICACIÓN:*\n`;
+
+    delivery.locations
+      .filter((l) => l.deliveredAt)
+      .sort((a, b) => a.orden - b.orden)
+      .forEach((location, index) => {
+        const deliveredAt = new Date(location.deliveredAt!);
+        const minutesFromStart = Math.round((deliveredAt.getTime() - startTime.getTime()) / (1000 * 60));
+        const hoursFromStart = Math.floor(minutesFromStart / 60);
+        const minsFromStart = minutesFromStart % 60;
+
+        const timeStr = hoursFromStart > 0 ? `${hoursFromStart}h ${minsFromStart}min` : `${minsFromStart} min`;
+        const kilosStr = location.kilosDescargados
+          ? `${location.kilosDescargados.toLocaleString('es-AR')} kg`
+          : 'Sin especificar';
+
+        summary += `${index + 1}. ${location.nombre}\n`;
+        summary += `   ⚖️ Descarga: ${kilosStr}\n`;
+        summary += `   ⏱️ Tiempo: ${timeStr}\n`;
+        if (location.notes) {
+          summary += `   📝 Nota: ${location.notes}\n`;
+        }
+      });
+
+    // Check for discrepancy
+    const diferencia = delivery.pesoNeto - totalKilosDescargados;
+    if (diferencia !== 0) {
+      summary += `\n⚠️ *DIFERENCIA:* ${diferencia.toLocaleString('es-AR')} kg `;
+      summary += diferencia > 0 ? '(faltante)\n' : '(excedente)\n';
+    }
+
+    summary += `\n⏱️ *TIEMPO TOTAL DE VIAJE:* `;
+    if (totalHours > 0) {
+      summary += `${totalHours} hora${totalHours > 1 ? 's' : ''} ${remainingMinutes} minutos\n`;
+    } else {
+      summary += `${remainingMinutes} minutos\n`;
+    }
+
+    summary += `\n🕐 *Inicio:* ${startTime.toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' })}\n`;
+    summary += `🕐 *Fin:* ${confirmedAt.toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' })}\n`;
+
+    // Add observations if any
+    if (delivery.observaciones) {
+      summary += `\n📝 *OBSERVACIONES:*\n${delivery.observaciones}\n`;
+    }
+
+    summary += `\n¡Gracias por tu trabajo, ${delivery.choferNombre.split(' ')[0]}! 🙌`;
+
+    return summary;
   }
 
   /**
@@ -458,6 +780,11 @@ IMPORTANTE: Solo incluye el JSON cuando el camionero CONFIRME una descarga espec
       throw new Error(`Pesada ${idPesada} not found`);
     }
 
+    // Calculate total kilos delivered
+    const totalKilosDescargados = delivery.locations
+      .filter((l) => l.status === 'delivered' && l.kilosDescargados)
+      .reduce((sum, l) => sum + (l.kilosDescargados || 0), 0);
+
     return {
       delivery: {
         id: delivery.id,
@@ -469,13 +796,18 @@ IMPORTANTE: Solo incluye el JSON cuando el camionero CONFIRME una descarga espec
         origen: delivery.origen,
         pesoNeto: delivery.pesoNeto,
         pesoUn: delivery.pesoUn,
+        totalKilosDescargados,
+        diferencia: delivery.pesoNeto - totalKilosDescargados,
         status: delivery.status,
+        observaciones: delivery.observaciones,
         reminderCount: delivery.reminderCount,
         locations: delivery.locations.map((l) => ({
           id: l.id,
           nombre: l.nombre,
           direccion: l.direccion,
           status: l.status,
+          kilosDescargados: l.kilosDescargados,
+          notes: l.notes,
           deliveredAt: l.deliveredAt,
         })),
         createdAt: delivery.createdAt,

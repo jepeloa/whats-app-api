@@ -795,6 +795,7 @@ model DeliveryTracking {
   lastReminderAt    DateTime?          @db.Timestamp
   lastMessageAt     DateTime?          @db.Timestamp
   emailRecipients   String?            @db.VarChar(1000)
+  observaciones     String?            @db.Text
   metadata          Json?              @db.JsonB
   createdAt         DateTime           @default(now()) @db.Timestamp
   updatedAt         DateTime           @updatedAt @db.Timestamp
@@ -815,6 +816,7 @@ model DeliveryLocation {
   direccion          String                 @db.VarChar(500)
   orden              Int                    @default(0) @db.Integer
   status             DeliveryLocationStatus @default(pending)
+  kilosDescargados   Float?                 @db.DoublePrecision
   deliveredAt        DateTime?              @db.Timestamp
   notes              String?                @db.Text
   createdAt          DateTime               @default(now()) @db.Timestamp

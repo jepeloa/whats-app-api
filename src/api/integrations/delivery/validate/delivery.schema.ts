@@ -68,22 +68,15 @@ export const createDeliverySchema: JSONSchema7 = {
 export const deliveryStatusSchema: JSONSchema7 = {
   $id: v4(),
   type: 'object',
-  properties: {
-    idPesada: { type: 'string', minLength: 1 },
-  },
-  required: ['idPesada'],
-  ...isNotEmpty('idPesada'),
+  properties: {},
 };
 
 export const closeDeliverySchema: JSONSchema7 = {
   $id: v4(),
   type: 'object',
   properties: {
-    idPesada: { type: 'string', minLength: 1 },
     reason: { type: 'string' },
   },
-  required: ['idPesada'],
-  ...isNotEmpty('idPesada'),
 };
 
 export const deliveryListSchema: JSONSchema7 = {
