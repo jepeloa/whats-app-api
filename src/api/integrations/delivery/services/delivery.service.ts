@@ -113,6 +113,7 @@ FORMATO DE RESPUESTA:
 - Para registrar problema: mensaje + JSON con observacion
 - Para CORREGIR kilos ya reportados: mensaje + JSON con action "update_delivery"
 - Para "el resto": mensaje + JSON con kilos: -1
+- **MÚLTIPLES UBICACIONES**: Si el camionero confirma varias ubicaciones en un mensaje, genera un JSON por cada ubicación (cada uno en línea separada después del separador)
 
 JSON (va en línea separada precedido por ---JSON---):
 {"action": "confirm_delivery", "ubicacion": "NOMBRE_EXACTO", "kilos": NUMERO_O_-1, "observacion": "OBLIGATORIO si menciona problema"}
@@ -153,6 +154,12 @@ Usuario: "Tuve un accidente, se rompió la bolsa y perdí mercadería"
 Respuesta: "Lamento escuchar eso ${firstName}. ¿Pudiste entregar algo en alguna ubicación? Registré el incidente.
 ---JSON---
 {"action": "report_issue", "observacion": "Accidente con rotura de bolsa, pérdida de mercadería"}"
+
+Usuario: "Descargué 10000 en la primera y 15000 en la segunda"
+Respuesta: "¡Perfecto ${firstName}! Confirmados 10.000 kg en Molino Norte y 15.000 kg en Acopio Central.
+---JSON---
+{"action": "confirm_delivery", "ubicacion": "Molino Norte", "kilos": 10000}
+{"action": "confirm_delivery", "ubicacion": "Acopio Central", "kilos": 15000}"
 
 IMPORTANTE: 
 - **SIEMPRE incluye "observacion" en el JSON cuando el camionero mencione: robo, accidente, pérdida, rotura, faltante, problema, derrame, o cualquier incidente.**
@@ -494,14 +501,28 @@ IMPORTANTE:
     jsonString: string,
     instanceName: string,
   ) {
-    // Try to extract JSON action from response
-    const jsonMatch = jsonString.match(/\{"action":\s*"(confirm_delivery|update_delivery|report_issue)".*?\}/);
-    if (!jsonMatch) {
+    // Try to extract ALL JSON actions from response (supports multiple)
+    const jsonMatches = jsonString.match(/\{"action":\s*"(confirm_delivery|update_delivery|report_issue)"[^}]*\}/g);
+    if (!jsonMatches || jsonMatches.length === 0) {
       return;
     }
 
+    // Process each action
+    for (const jsonMatch of jsonMatches) {
+      await this.processSingleAction(delivery, jsonMatch, instanceName);
+    }
+  }
+
+  /**
+   * Process a single action from AI response
+   */
+  private async processSingleAction(
+    delivery: DeliveryTracking & { locations: any[] },
+    jsonMatch: string,
+    instanceName: string,
+  ) {
     try {
-      const action = JSON.parse(jsonMatch[0]);
+      const action = JSON.parse(jsonMatch);
 
       // IMPORTANT: Reload delivery from DB to get current real values
       const freshDelivery = await this.prismaRepository.deliveryTracking.findUnique({
