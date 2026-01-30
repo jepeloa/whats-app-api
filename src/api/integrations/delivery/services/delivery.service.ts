@@ -4,14 +4,17 @@ import { ConfigService } from '@config/env.config';
 import { Logger } from '@config/logger.config';
 import { DeliveryStatus, DeliveryTracking } from '@prisma/client';
 import { getConversationMessage } from '@utils/getConversationMessage';
+import * as fs from 'fs';
 import OpenAI from 'openai';
 
 import { CreateDeliveryDto } from '../dto/delivery.dto';
 import { DeliveryEmailService } from './delivery-email.service';
+import { DeliveryPdfService } from './delivery-pdf.service';
 
 export class DeliveryService {
   private readonly logger = new Logger('DeliveryService');
   private openaiClient: OpenAI;
+  private readonly pdfService = new DeliveryPdfService();
 
   constructor(
     private readonly waMonitor: WAMonitoringService,
@@ -282,6 +285,46 @@ IMPORTANTE:
       this.logger.info(`Message sent to ${remoteJid}`);
     } catch (error) {
       this.logger.error(`Error sending message: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Send a document (PDF) via WhatsApp
+   */
+  private async sendWhatsAppDocument(
+    instanceName: string,
+    remoteJid: string,
+    filePath: string,
+    fileName: string,
+    caption?: string,
+  ) {
+    const waInstance = this.waMonitor.waInstances[instanceName];
+    if (!waInstance) {
+      this.logger.error(`WhatsApp instance ${instanceName} not found`);
+      throw new Error(`WhatsApp instance ${instanceName} not found`);
+    }
+
+    try {
+      // Read file and convert to base64
+      const fileBuffer = fs.readFileSync(filePath);
+      const base64 = fileBuffer.toString('base64');
+
+      await waInstance.mediaMessage(
+        {
+          number: remoteJid.replace('@s.whatsapp.net', ''),
+          mediatype: 'document',
+          mimetype: 'application/pdf',
+          media: base64,
+          fileName: fileName,
+          caption: caption,
+        },
+        undefined,
+        false,
+      );
+      this.logger.info(`Document ${fileName} sent to ${remoteJid}`);
+    } catch (error) {
+      this.logger.error(`Error sending document: ${error.message}`);
       throw error;
     }
   }
@@ -654,6 +697,50 @@ IMPORTANTE:
       const summaryMessage = this.buildCompletionSummary(delivery, confirmedAt);
       await this.sendWhatsAppMessage(instanceName, delivery.remoteJid, summaryMessage);
       await this.logMessage(deliveryId, 'assistant', summaryMessage);
+
+      // Generate and send PDF report
+      try {
+        const pdfData = {
+          idPesada: delivery.idPesada,
+          choferNombre: delivery.choferNombre,
+          patente: delivery.patente,
+          artNombre: delivery.artNombre,
+          origen: delivery.origen,
+          pesoNeto: delivery.pesoNeto,
+          pesoUn: delivery.pesoUn,
+          status: 'completed',
+          observaciones: delivery.observaciones,
+          createdAt: delivery.createdAt,
+          confirmedAt: confirmedAt,
+          locations: delivery.locations.map((loc) => ({
+            nombre: loc.nombre,
+            direccion: loc.direccion,
+            kilosDescargados: loc.kilosDescargados,
+            notes: loc.notes,
+            status: loc.status,
+            deliveredAt: loc.deliveredAt,
+            orden: loc.orden,
+          })),
+        };
+
+        const pdfPath = await this.pdfService.generateDeliveryReport(pdfData);
+        const pdfFileName = `Reporte_Pesada_${delivery.idPesada}.pdf`;
+
+        await this.sendWhatsAppDocument(
+          instanceName,
+          delivery.remoteJid,
+          pdfPath,
+          pdfFileName,
+          `📄 Reporte de entrega - Pesada ${delivery.idPesada}`,
+        );
+        await this.logMessage(deliveryId, 'system', `PDF de reporte enviado: ${pdfFileName}`);
+
+        // Cleanup temp file
+        await this.pdfService.cleanupPdf(pdfPath);
+      } catch (pdfError) {
+        this.logger.error(`Error generating/sending PDF: ${pdfError.message}`);
+        // Don't fail the whole process if PDF fails
+      }
 
       // Send completion email
       await this.emailService.sendDeliveryCompletedEmail(delivery, 'completed');
