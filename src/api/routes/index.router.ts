@@ -3,6 +3,7 @@ import { instanceExistsGuard, instanceLoggedGuard } from '@api/guards/instance.g
 import Telemetry from '@api/guards/telemetry.guard';
 import { ChannelRouter } from '@api/integrations/channel/channel.router';
 import { ChatbotRouter } from '@api/integrations/chatbot/chatbot.router';
+import { DeliveryRouter } from '@api/integrations/delivery/routes/delivery.router';
 import { EventRouter } from '@api/integrations/event/event.router';
 import { StorageRouter } from '@api/integrations/storage/storage.router';
 import { waMonitor } from '@api/server.module';
@@ -224,6 +225,7 @@ router
   .use('/settings', new SettingsRouter(...guards).router)
   .use('/proxy', new ProxyRouter(...guards).router)
   .use('/label', new LabelRouter(...guards).router)
+  .use('/delivery', new DeliveryRouter(...guards).router)
   .use('', new ChannelRouter(configService, ...guards).router)
   .use('', new EventRouter(configService, ...guards).router)
   .use('', new ChatbotRouter(...guards).router)

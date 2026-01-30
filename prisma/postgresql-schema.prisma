@@ -111,6 +111,7 @@ model Instance {
   N8nSetting              N8nSetting[]
   Evoai                   Evoai[]
   EvoaiSetting            EvoaiSetting?
+  DeliveryTracking        DeliveryTracking[]
 }
 
 model Session {
@@ -760,4 +761,78 @@ model EvoaiSetting {
   evoaiIdFallback String?   @db.VarChar(100)
   Instance        Instance  @relation(fields: [instanceId], references: [id], onDelete: Cascade)
   instanceId      String    @unique
+}
+
+// ==========================================
+// DELIVERY TRACKING MODELS
+// ==========================================
+
+enum DeliveryStatus {
+  pending       // Camionero nunca contestó
+  in_progress   // Conversación activa
+  partial       // Algunas ubicaciones entregadas, recordatorios agotados
+  not_delivered // Ninguna ubicación entregada, recordatorios agotados
+  completed     // Todas las ubicaciones entregadas
+}
+
+enum DeliveryLocationStatus {
+  pending   // Pendiente de entrega
+  delivered // Entregado
+}
+
+model DeliveryTracking {
+  id                String             @id @default(cuid())
+  idPesada          String             @db.VarChar(100)
+  remoteJid         String             @db.VarChar(100)
+  choferNombre      String             @db.VarChar(255)
+  patente           String             @db.VarChar(50)
+  artNombre         String             @db.VarChar(255)
+  origen            String             @db.VarChar(500)
+  pesoNeto          Float              @db.DoublePrecision
+  pesoUn            String             @db.VarChar(20)
+  status            DeliveryStatus     @default(pending)
+  reminderCount     Int                @default(0) @db.Integer
+  lastReminderAt    DateTime?          @db.Timestamp
+  lastMessageAt     DateTime?          @db.Timestamp
+  emailRecipients   String?            @db.VarChar(1000)
+  metadata          Json?              @db.JsonB
+  createdAt         DateTime           @default(now()) @db.Timestamp
+  updatedAt         DateTime           @updatedAt @db.Timestamp
+  confirmedAt       DateTime?          @db.Timestamp
+  Instance          Instance           @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  instanceId        String
+  locations         DeliveryLocation[]
+  messages          DeliveryMessage[]
+
+  @@unique([idPesada, instanceId])
+  @@index([instanceId])
+  @@index([remoteJid, instanceId, status])
+}
+
+model DeliveryLocation {
+  id                 String                 @id @default(cuid())
+  nombre             String                 @db.VarChar(255)
+  direccion          String                 @db.VarChar(500)
+  orden              Int                    @default(0) @db.Integer
+  status             DeliveryLocationStatus @default(pending)
+  deliveredAt        DateTime?              @db.Timestamp
+  notes              String?                @db.Text
+  createdAt          DateTime               @default(now()) @db.Timestamp
+  updatedAt          DateTime               @updatedAt @db.Timestamp
+  DeliveryTracking   DeliveryTracking       @relation(fields: [deliveryTrackingId], references: [id], onDelete: Cascade)
+  deliveryTrackingId String
+
+  @@index([deliveryTrackingId])
+}
+
+model DeliveryMessage {
+  id                 String           @id @default(cuid())
+  role               String           @db.VarChar(20) // user, assistant, system
+  content            String           @db.Text
+  timestamp          DateTime         @default(now()) @db.Timestamp
+  DeliveryTracking   DeliveryTracking @relation(fields: [deliveryTrackingId], references: [id], onDelete: Cascade)
+  deliveryTrackingId String
+
+  @@index([deliveryTrackingId])
+  @@index([timestamp])
 }

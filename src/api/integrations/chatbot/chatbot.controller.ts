@@ -1,6 +1,7 @@
 import { InstanceDto } from '@api/dto/instance.dto';
 import { PrismaRepository } from '@api/repository/repository.service';
 import {
+  deliveryController,
   difyController,
   evoaiController,
   evolutionBotController,
@@ -104,6 +105,9 @@ export class ChatbotController {
     evoaiController.emit(emitData);
 
     flowiseController.emit(emitData);
+
+    // Delivery Tracking - process messages for active deliveries
+    deliveryController.processMessage(instance.instanceName, remoteJid, msg);
   }
 
   public processDebounce(
