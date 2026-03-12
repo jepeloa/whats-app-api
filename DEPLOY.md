@@ -102,6 +102,20 @@ Buscar estas líneas que confirman reconexión exitosa:
 Auto-connecting instance "POC-test-sibila" (status: open)
 ```
 
+## Configuración del nombre de dispositivo
+
+En el `.env` del servidor, estas variables controlan cómo aparece el dispositivo vinculado en WhatsApp:
+
+```env
+CONFIG_SESSION_PHONE_CLIENT=WhatsApp Web
+CONFIG_SESSION_PHONE_NAME=Chrome
+```
+
+**NUNCA usar "Evolution API"** — WhatsApp puede detectarlo como bot y **restringir la cuenta**.
+El nombre "WhatsApp Web" es idéntico al que muestra el WhatsApp Web real.
+
+> Este cambio solo aplica a nuevas vinculaciones. Si ya hay una sesión activa, el nombre viejo permanece hasta que se re-vincule.
+
 ## Instancia actual
 
 | Campo | Valor |
