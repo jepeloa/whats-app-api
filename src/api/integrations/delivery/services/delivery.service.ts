@@ -425,11 +425,61 @@ IMPORTANTE:
       return;
     }
 
+    this.logger.verbose(`Full AI response for pesada ${delivery.idPesada}: ${aiResponse}`);
+
     // Extract clean message (without JSON) for sending to user
-    const { cleanMessage, jsonPart } = this.extractJsonFromResponse(aiResponse);
+    const { cleanMessage, jsonPart: initialJsonPart } = this.extractJsonFromResponse(aiResponse);
+    let jsonPart = initialJsonPart;
 
     // Log full AI response for audit
     await this.logMessage(delivery.id, 'assistant', cleanMessage);
+
+    // Retry: if no JSON found but there are pending locations and the response mentions delivery-related words
+    if (!jsonPart && delivery.locations.some((l) => l.status === 'pending')) {
+      const deliveryKeywords = /\b(confirm|kilos?|kg|descarg|entreg|listo|perfecto|excelente|anotado|registr)/i;
+      if (deliveryKeywords.test(aiResponse)) {
+        this.logger.warn(
+          `No JSON action found but response seems delivery-related for pesada ${delivery.idPesada}. Retrying...`,
+        );
+
+        const retryMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+          {
+            role: 'system',
+            content: `Tu respuesta anterior fue:
+"${aiResponse}"
+
+Genera SOLAMENTE el/los JSON de acción correspondientes a esa respuesta. Sin texto, sin explicación, solo JSON.
+Cada JSON en una línea separada. Formato:
+{"action": "confirm_delivery", "ubicacion": "NOMBRE_EXACTO", "kilos": NUMERO}
+{"action": "update_delivery", "ubicacion": "NOMBRE_EXACTO", "kilos": NUMERO}
+{"action": "report_issue", "observacion": "descripción"}
+
+Ubicaciones pendientes: ${delivery.locations
+              .filter((l) => l.status === 'pending')
+              .map((l) => l.nombre)
+              .join(', ')}
+Ubicaciones entregadas: ${delivery.locations
+              .filter((l) => l.status === 'delivered')
+              .map((l) => l.nombre)
+              .join(', ')}`,
+          },
+          { role: 'user', content: content },
+        ];
+
+        const retryResponse = await this.getAIResponse(retryMessages);
+        if (retryResponse) {
+          this.logger.info(`Retry response for pesada ${delivery.idPesada}: ${retryResponse}`);
+          // The retry response should be pure JSON lines
+          const retryExtract = this.extractJsonFromResponse(retryResponse);
+          if (retryExtract.jsonPart) {
+            jsonPart = retryExtract.jsonPart;
+          } else {
+            // Try the whole response as JSON directly
+            jsonPart = retryResponse;
+          }
+        }
+      }
+    }
 
     // Process JSON action if present
     if (jsonPart) {
@@ -456,14 +506,20 @@ IMPORTANTE:
       return { cleanMessage, jsonPart };
     }
 
-    // Fallback: try to find JSON inline (old format)
-    const jsonMatch = response.match(/\{"action":\s*"confirm_delivery".*?\}/);
-    if (jsonMatch) {
-      const cleanMessage = response
-        .replace(jsonMatch[0], '')
+    // Fallback: try to find any JSON action inline (all action types)
+    const jsonMatches = response.match(
+      /\{[^{}]*"action"\s*:\s*"(?:confirm_delivery|update_delivery|report_issue)"[^{}]*\}/g,
+    );
+    if (jsonMatches && jsonMatches.length > 0) {
+      let cleanMessage = response;
+      for (const m of jsonMatches) {
+        cleanMessage = cleanMessage.replace(m, '');
+      }
+      cleanMessage = cleanMessage
         .replace(/```json\s*```/g, '')
+        .replace(/```/g, '')
         .trim();
-      return { cleanMessage, jsonPart: jsonMatch[0] };
+      return { cleanMessage, jsonPart: jsonMatches.join('\n') };
     }
 
     return { cleanMessage: response, jsonPart: null };
@@ -482,8 +538,8 @@ IMPORTANTE:
       const response = await this.openaiClient.chat.completions.create({
         model: 'gpt-4o-mini',
         messages,
-        max_tokens: 500,
-        temperature: 0.7,
+        max_tokens: 1000,
+        temperature: 0.3,
       });
 
       return response.choices[0]?.message?.content || null;
@@ -501,11 +557,44 @@ IMPORTANTE:
     jsonString: string,
     instanceName: string,
   ) {
-    // Try to extract ALL JSON actions from response (supports multiple)
-    const jsonMatches = jsonString.match(/\{"action":\s*"(confirm_delivery|update_delivery|report_issue)"[^}]*\}/g);
-    if (!jsonMatches || jsonMatches.length === 0) {
+    // Parse JSON actions line by line — each line after ---JSON--- should be a JSON object
+    const jsonMatches: string[] = [];
+    const lines = jsonString
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+
+    for (const line of lines) {
+      // Try to parse each line as JSON
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed && parsed.action) {
+          jsonMatches.push(line);
+        }
+      } catch {
+        // Not a JSON line — try regex fallback for inline JSON
+        const inlineMatches = line.match(/\{[^{}]*"action"\s*:\s*"[^"]+"[^{}]*\}/g);
+        if (inlineMatches) {
+          for (const m of inlineMatches) {
+            try {
+              const parsed = JSON.parse(m);
+              if (parsed && parsed.action) {
+                jsonMatches.push(m);
+              }
+            } catch {
+              // skip malformed
+            }
+          }
+        }
+      }
+    }
+
+    if (jsonMatches.length === 0) {
+      this.logger.warn(`No valid JSON actions found in AI response for pesada ${delivery.idPesada}: ${jsonString}`);
       return;
     }
+
+    this.logger.info(`Found ${jsonMatches.length} JSON action(s) for pesada ${delivery.idPesada}`);
 
     // Process each action
     for (const jsonMatch of jsonMatches) {

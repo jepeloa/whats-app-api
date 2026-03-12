@@ -12,7 +12,7 @@
 
 API_URL="http://167.71.214.252:8081"
 API_KEY="429683C4C977415CAAFCCE10F7D57E11"
-INSTANCE="javier"
+INSTANCE="POC-test-sibila"
 
 curl -s -X POST "${API_URL}/delivery/create/${INSTANCE}" \
   -H "apikey: ${API_KEY}" \
