@@ -179,8 +179,9 @@ ${gpsNote}
 INSTRUCCIONES PARA ENTREGAS:
 1. Responde de forma MUY BREVE y amigable (máximo 2 oraciones).
 2. Cuando el camionero confirme una entrega, SIEMPRE pregunta cuántos kilos descargó si no lo mencionó.
-3. Si el camionero menciona un problema (accidente, rotura, robo, pérdida, derrame, etc.), registra con "report_issue".
+3. Si el camionero menciona un problema (accidente, rotura, robo, pérdida, derrame, etc.), registra con "report_issue" E INCLUYE la ubicación afectada. Esto CIERRA esa ubicación con 0 kg.
 4. Si quedan ubicaciones pendientes, recuérdale la siguiente ubicación.
+4b. CRUCIAL: Si acabas de preguntar "¿Cuántos kilos descargaste en [ubicación]?" y el camionero responde con un NÚMERO (ej: "5000", "10000", "el resto"), SIEMPRE genera confirm_delivery para esa ubicación con esos kilos. NUNCA devuelvas actions vacío en ese caso.
 5. Para CORRECCIONES de kilos ya entregados, usa "update_delivery".
 6. Si dice "el resto", "lo que queda", "todo lo demás", usa kilos: -1 (el sistema calcula ${kilosRestantes.toLocaleString('es-AR')} kg).
 7. Valida que los kilos no excedan ${kilosRestantes.toLocaleString('es-AR')} kg restantes.
@@ -232,6 +233,15 @@ Camionero: "¿Cuántas pesadas tengo?"
 Camionero: "Hola, buen día"
 → message: "¡Buen día ${firstName}! ¿Cómo va el viaje? Avisame cuando hagas alguna descarga."
 → actions: [{"action":"chat","ubicacion":null,"kilos":null,"observacion":null}]
+
+(Contexto: acabas de preguntar "¿Cuántos kilos descargaste en Terminal Sur?")
+Camionero: "5000"
+→ message: "¡Perfecto ${firstName}! Confirmados 5.000 kg en Terminal Sur. 📍 ¿Podés compartirme tu ubicación?"
+→ actions: [{"action":"confirm_delivery","ubicacion":"Terminal Sur","kilos":5000,"observacion":null}, {"action":"request_location","ubicacion":"Terminal Sur","kilos":null,"observacion":null}]
+
+Camionero: "Se me cayeron los kilos, perdí todo"
+→ message: "Lamento escuchar eso ${firstName}. Registré el incidente en Planta Norte."
+→ actions: [{"action":"report_issue","ubicacion":"Planta Norte","kilos":0,"observacion":"Pérdida total de carga en Planta Norte"}]
 
 IMPORTANTE:
 - SIEMPRE incluye "observacion" cuando el camionero mencione: robo, accidente, pérdida, rotura, faltante, problema, derrame.
@@ -721,6 +731,45 @@ IMPORTANTE:
       if (action.action === 'report_issue' && action.observacion) {
         await this.addObservacion(freshDelivery.id, action.observacion);
         this.logger.info(`Issue reported for pesada ${freshDelivery.idPesada}: ${action.observacion}`);
+
+        // If a location is specified, mark it as delivered with 0 kg to close it out
+        if (action.ubicacion) {
+          const location = freshDelivery.locations.find(
+            (l) =>
+              (l.nombre.toLowerCase().includes(action.ubicacion!.toLowerCase()) ||
+                action.ubicacion!.toLowerCase().includes(l.nombre.toLowerCase())) &&
+              l.status === 'pending',
+          );
+
+          if (location) {
+            await this.prismaRepository.deliveryLocation.update({
+              where: { id: location.id },
+              data: {
+                status: 'delivered',
+                deliveredAt: new Date(),
+                kilosDescargados: action.kilos || 0,
+                notes: action.observacion,
+              },
+            });
+
+            this.logger.info(`Location ${location.nombre} closed due to issue for pesada ${freshDelivery.idPesada}`);
+
+            await this.logMessage(
+              freshDelivery.id,
+              'system',
+              `Ubicación "${location.nombre}" cerrada por incidente (${(action.kilos || 0).toLocaleString('es-AR')} kg). Motivo: ${action.observacion}`,
+              'action',
+              {
+                action: 'report_issue',
+                ubicacion: location.nombre,
+                kilos: action.kilos || 0,
+                observacion: action.observacion,
+              },
+            );
+
+            await this.checkDeliveryComplete(freshDelivery.id, instanceName);
+          }
+        }
         return;
       }
 
