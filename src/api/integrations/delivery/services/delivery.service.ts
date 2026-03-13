@@ -471,7 +471,8 @@ IMPORTANTE:
     });
 
     if (!delivery) {
-      // No active delivery — handle as general chat if desired (future: could respond generically)
+      // No active delivery — respond as general chat or show pending deliveries
+      await this.handleNoActiveDelivery(remoteJid, instance.id, instanceName, messageRaw);
       return;
     }
 
@@ -547,11 +548,10 @@ IMPORTANTE:
       }
 
       if (action.action === 'query_pending') {
-        // Build response with pending deliveries for this driver
+        // Append pending deliveries info to the AI message (sent below)
         const pendingInfo = await this.buildPendingDeliveriesInfo(remoteJid, instance.id);
         if (pendingInfo) {
-          await this.sendWhatsAppMessage(instanceName, remoteJid, pendingInfo);
-          await this.logMessage(delivery.id, 'assistant', pendingInfo, 'text');
+          aiResponse.message = aiResponse.message ? `${aiResponse.message}\n\n${pendingInfo}` : pendingInfo;
         }
         continue;
       }
@@ -629,6 +629,51 @@ IMPORTANTE:
       const infoMsg = '📍 Recibí tu ubicación. ¡Gracias!';
       await this.sendWhatsAppMessage(instanceName, delivery.remoteJid, infoMsg);
       await this.logMessage(delivery.id, 'assistant', infoMsg, 'location', locationData);
+    }
+  }
+
+  /**
+   * Handle messages when the driver has no active delivery
+   * Acts as a general chat assistant and can show pending deliveries
+   */
+  private async handleNoActiveDelivery(remoteJid: string, instanceId: string, instanceName: string, messageRaw: any) {
+    const content = getConversationMessage(messageRaw);
+    if (!content) return;
+
+    this.logger.info(`No active delivery for ${remoteJid}, handling as general chat: ${content}`);
+
+    // Check if they're asking about pending deliveries
+    const pendingInfo = await this.buildPendingDeliveriesInfo(remoteJid, instanceId);
+
+    // Build a simple chat response using OpenAI
+    const systemPrompt = `Eres un asistente de logística amigable. El camionero no tiene una pesada activa asignada en este momento.
+Respondé de forma breve y útil. Si pregunta sobre pesadas, órdenes o entregas pendientes, la información está abajo.
+
+${pendingInfo || 'No tiene pesadas pendientes.'}
+
+Si pregunta algo general (clima, direcciones, etc.), respondé normalmente.
+Si pregunta sobre entregas, usá la info de arriba.
+Respondé siempre en español, breve y amigable.`;
+
+    const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content },
+    ];
+
+    try {
+      const response = await this.openaiClient.chat.completions.create({
+        model: 'gpt-4o',
+        messages,
+        max_tokens: 500,
+        temperature: 0.7,
+      });
+
+      const reply = response.choices[0]?.message?.content;
+      if (reply) {
+        await this.sendWhatsAppMessage(instanceName, remoteJid, reply);
+      }
+    } catch (error) {
+      this.logger.error(`OpenAI error in general chat: ${error.message}`);
     }
   }
 
