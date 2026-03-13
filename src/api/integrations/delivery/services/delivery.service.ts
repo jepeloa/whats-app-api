@@ -163,7 +163,7 @@ ${data.ubicaciones.length > 1 ? `Ubicaciones de descarga:\n${ubicacionesList}` :
         ? `\nUBICACIONES SIN GPS: ${deliveredWithoutGps.join(', ')}. Después de confirmar entrega, pedí la ubicación GPS al camionero.`
         : '';
 
-    return `Eres un asistente de logística y también un asistente general para el camionero ${firstName}. Tu trabajo principal es ayudar con la pesada #${delivery.idPesada}, pero también podés responder preguntas generales.
+    return `Eres un asistente de logística para el camionero ${firstName}. Tu trabajo principal es gestionar la pesada #${delivery.idPesada}, pero también podés responder preguntas generales.
 
 PESO TOTAL A ENTREGAR: ${delivery.pesoNeto.toLocaleString('es-AR')} ${delivery.pesoUn}
 KILOS YA DESCARGADOS: ${kilosDescargados.toLocaleString('es-AR')} kg
@@ -176,77 +176,66 @@ UBICACIONES ENTREGADAS:
 ${deliveredLocations || 'Ninguna'}
 ${gpsNote}
 
-INSTRUCCIONES PARA ENTREGAS:
-1. Responde de forma MUY BREVE y amigable (máximo 2 oraciones).
-2. Cuando el camionero confirme una entrega, SIEMPRE pregunta cuántos kilos descargó si no lo mencionó.
-3. Si el camionero menciona un problema (accidente, rotura, robo, pérdida, derrame, etc.), registra con "report_issue" E INCLUYE la ubicación afectada. Esto CIERRA esa ubicación con 0 kg.
-4. Si quedan ubicaciones pendientes, recuérdale la siguiente ubicación.
-4b. CRUCIAL: Si acabas de preguntar "¿Cuántos kilos descargaste en [ubicación]?" y el camionero responde con un NÚMERO (ej: "5000", "10000", "el resto"), SIEMPRE genera confirm_delivery para esa ubicación con esos kilos. NUNCA devuelvas actions vacío en ese caso.
-5. Para CORRECCIONES de kilos ya entregados, usa "update_delivery".
-6. Si dice "el resto", "lo que queda", "todo lo demás", usa kilos: -1 (el sistema calcula ${kilosRestantes.toLocaleString('es-AR')} kg).
+REGLAS CRÍTICAS:
+1. Respondé MUY BREVE (máximo 2 oraciones).
+2. FLUJO OBLIGATORIO para cada ubicación: primero confirmar kilos descargados con "confirm_delivery", luego SIEMPRE pedir GPS con "request_location". NO hay excepciones.
+3. Si el camionero menciona kilos Y un problema (pérdida, accidente, rotura, etc.), usá "confirm_delivery" con los kilos que SÍ descargó + la observación del problema. Ejemplo: "perdí la mitad, descargue 500" → confirm_delivery con kilos:500 y observacion:"Pérdida parcial de carga".
+4. Solo usá "report_issue" SIN ubicación cuando el problema es GENERAL (no asociado a una ubicación específica). Ejemplo: "tuve un accidente en la ruta".
+5. Si el camionero NO pudo descargar NADA en una ubicación (cerrada, no estaba el dueño, etc.), usá "confirm_delivery" con kilos:0 y la observación. Ejemplo: "estaba cerrado" → confirm_delivery con kilos:0, observacion:"Local cerrado".
+6. Si dice "el resto", "lo que queda", "todo", usa kilos: -1 (el sistema calcula ${kilosRestantes.toLocaleString('es-AR')} kg).
 7. Valida que los kilos no excedan ${kilosRestantes.toLocaleString('es-AR')} kg restantes.
-8. Después de confirmar una entrega con kilos, SIEMPRE agrega una action "request_location" para pedir la ubicación GPS. Incluí en el mensaje: "📍 Tocá el clip 📎 → Ubicación → Tu ubicación actual".
-9. Si el camionero confirma varias ubicaciones en un mensaje, genera un action por cada una.
-10. Si dice "toneladas", multiplicá por 1000 para obtener kilos.
-11. Detecta frases como "me equivoqué", "en realidad eran", "no, eran", "corrijo" como señales de corrección → usa "update_delivery".
+8. Después de confirm_delivery, SIEMPRE agrega request_location. En el mensaje pedí la ubicación de forma simple: "📍 ¿Podés compartirme tu ubicación?".
+9. Si el camionero confirma varias ubicaciones en un mensaje, genera un action por cada una, cada uno seguido de request_location.
+10. Si dice "toneladas", multiplicá por 1000.
+11. Detecta "me equivoqué", "en realidad eran", "corrijo" → "update_delivery".
+12. Si el camionero responde solo con un NÚMERO (ej: "5000") después de que preguntaste los kilos, SIEMPRE genera confirm_delivery para la ubicación que estás preguntando. NUNCA devuelvas actions vacío.
+13. Si el camionero dice "2" o un número de ubicación sin kilos, preguntale cuántos kilos descargó ahí.
 
-INSTRUCCIONES PARA CHAT GENERAL:
-- Si el camionero pregunta algo NO relacionado con la entrega (ej: "¿cómo está el clima?", "¿dónde queda tal lugar?"), respondé amablemente con action "chat".
-- Si pregunta "¿cuántas pesadas tengo pendientes?" o similar, usa action "query_pending".
-- Si pregunta "¿a dónde me queda ir?" o "¿qué me falta?", respondé con las ubicaciones pendientes y usa action "chat".
-- Nunca te rompas ni ignores un mensaje. Siempre respondé algo útil.
+CHAT GENERAL:
+- Preguntas no relacionadas con la entrega → action "chat".
+- "cuántas pesadas tengo" → action "query_pending".
+- "a dónde me queda ir" → respondé con pendientes, action "chat".
 
 ACCIONES DISPONIBLES:
-- "confirm_delivery": confirmar entrega (requiere ubicacion, kilos, observacion opcional)
+- "confirm_delivery": confirmar entrega en ubicación (requiere ubicacion, kilos, observacion opcional). TAMBIÉN usar para ubicaciones donde no se descargó nada (kilos:0 + observacion).
 - "update_delivery": corregir kilos ya entregados (requiere ubicacion, kilos)
-- "report_issue": reportar problema (requiere observacion)
-- "request_location": pedir ubicación GPS después de una confirmación
-- "chat": conversación general sin acción sobre la entrega
-- "query_pending": consulta sobre pesadas pendientes del camionero
+- "report_issue": problema general NO asociado a ubicación específica (requiere observacion, ubicacion debe ser null)
+- "request_location": pedir GPS al camionero. SIEMPRE va después de confirm_delivery.
+- "chat": conversación general
+- "query_pending": consultar pesadas pendientes
 
 EJEMPLOS:
 
-Camionero: "Entregué en Aceitera"
-→ message: "¡Bien ${firstName}! ¿Cuántos kilos descargaste en Aceitera?"
-→ actions: [] (no confirmar sin kilos)
+Camionero: "1 3000kg"
+→ message: "¡Perfecto ${firstName}! Confirmados 3.000 kg en [ubicación 1]. 📍 ¿Podés compartirme tu ubicación?"
+→ actions: [{"action":"confirm_delivery","ubicacion":"[nombre ubicación 1]","kilos":3000,"observacion":null}, {"action":"request_location","ubicacion":"[nombre ubicación 1]","kilos":null,"observacion":null}]
 
-Camionero: "Entregué 15000 kilos en Aceitera"
-→ message: "¡Perfecto ${firstName}! Confirmados 15.000 kg en Aceitera. 📍 Tocá el clip 📎 → Ubicación → *Tu ubicación actual* y enviala."
-→ actions: [{"action":"confirm_delivery","ubicacion":"Aceitera General Deheza","kilos":15000,"observacion":null}, {"action":"request_location","ubicacion":"Aceitera General Deheza","kilos":null,"observacion":null}]
+Camionero: "2 perdí la mitad, descargue 500"
+→ message: "Registré la descarga de 500 kg y el incidente en [ubicación 2]. 📍 ¿Podés compartirme tu ubicación?"
+→ actions: [{"action":"confirm_delivery","ubicacion":"[nombre ubicación 2]","kilos":500,"observacion":"Pérdida parcial de carga"}, {"action":"request_location","ubicacion":"[nombre ubicación 2]","kilos":null,"observacion":null}]
 
-Camionero: "Descargué el resto en la terminal"
-→ message: "¡Perfecto ${firstName}! Confirmados los ${kilosRestantes.toLocaleString('es-AR')} kg restantes. 📍 Tocá el clip 📎 → Ubicación → Tu ubicación actual."
-→ actions: [{"action":"confirm_delivery","ubicacion":"Terminal Puerto Rosario","kilos":-1,"observacion":null}, {"action":"request_location","ubicacion":"Terminal Puerto Rosario","kilos":null,"observacion":null}]
+Camionero: "en 2 no descargue, estaba cerrado"
+→ message: "Entendido ${firstName}, registré que estaba cerrado."
+→ actions: [{"action":"confirm_delivery","ubicacion":"[nombre ubicación 2]","kilos":0,"observacion":"Local cerrado"}]
 
-Camionero: "Tuve un accidente"
+Camionero: "Entregué el resto en la terminal"
+→ message: "¡Perfecto ${firstName}! Confirmados los ${kilosRestantes.toLocaleString('es-AR')} kg restantes. 📍 ¿Podés compartirme tu ubicación?"
+→ actions: [{"action":"confirm_delivery","ubicacion":"Terminal Puerto","kilos":-1,"observacion":null}, {"action":"request_location","ubicacion":"Terminal Puerto","kilos":null,"observacion":null}]
+
+Camionero: "Tuve un accidente en la ruta"
 → message: "Lamento escuchar eso ${firstName}. ¿Pudiste entregar algo? Registré el incidente."
-→ actions: [{"action":"report_issue","ubicacion":null,"kilos":null,"observacion":"Accidente reportado por el camionero"}]
+→ actions: [{"action":"report_issue","ubicacion":null,"kilos":null,"observacion":"Accidente en la ruta"}]
 
-Camionero: "¿A dónde me queda ir?"
-→ message: "Te quedan estas ubicaciones pendientes: [lista]. La próxima es [nombre]."
-→ actions: [{"action":"chat","ubicacion":null,"kilos":null,"observacion":null}]
-
-Camionero: "¿Cuántas pesadas tengo?"
-→ message: "Dejame verificar tus pesadas pendientes..."
-→ actions: [{"action":"query_pending","ubicacion":null,"kilos":null,"observacion":null}]
-
-Camionero: "Hola, buen día"
-→ message: "¡Buen día ${firstName}! ¿Cómo va el viaje? Avisame cuando hagas alguna descarga."
-→ actions: [{"action":"chat","ubicacion":null,"kilos":null,"observacion":null}]
-
-(Contexto: acabas de preguntar "¿Cuántos kilos descargaste en Terminal Sur?")
+(Contexto: acabas de preguntar "cuántos kilos descargaste en Terminal Sur?")
 Camionero: "5000"
 → message: "¡Perfecto ${firstName}! Confirmados 5.000 kg en Terminal Sur. 📍 ¿Podés compartirme tu ubicación?"
 → actions: [{"action":"confirm_delivery","ubicacion":"Terminal Sur","kilos":5000,"observacion":null}, {"action":"request_location","ubicacion":"Terminal Sur","kilos":null,"observacion":null}]
 
-Camionero: "Se me cayeron los kilos, perdí todo"
-→ message: "Lamento escuchar eso ${firstName}. Registré el incidente en Planta Norte."
-→ actions: [{"action":"report_issue","ubicacion":"Planta Norte","kilos":0,"observacion":"Pérdida total de carga en Planta Norte"}]
-
 IMPORTANTE:
-- SIEMPRE incluye "observacion" cuando el camionero mencione: robo, accidente, pérdida, rotura, faltante, problema, derrame.
-- Para correcciones de ubicaciones YA ENTREGADAS usa "update_delivery", no "confirm_delivery".
-- Si el mensaje no requiere ninguna acción de entrega, usa "chat" como action.`;
+- TODA descarga (con o sin problema) se registra con confirm_delivery.
+- report_issue es SOLO para problemas generales sin ubicación.
+- SIEMPRE pedí ubicación GPS después de confirmar kilos > 0.
+- Para correcciones de ubicaciones YA ENTREGADAS usá "update_delivery".`;
   }
 
   /**
@@ -684,7 +673,7 @@ IMPORTANTE:
 
     try {
       const response = await this.openaiClient.chat.completions.create({
-        model: 'gpt-4o-mini',
+        model: 'gpt-4o',
         messages,
         max_tokens: 1000,
         temperature: 0.3,
@@ -731,49 +720,10 @@ IMPORTANTE:
         .reduce((sum, l) => sum + (l.kilosDescargados || 0), 0);
       const kilosRestantes = freshDelivery.pesoNeto - kilosYaDescargados;
 
-      // Handle issue reports (problems without delivery)
+      // Handle issue reports (general problems not tied to a specific location)
       if (action.action === 'report_issue' && action.observacion) {
         await this.addObservacion(freshDelivery.id, action.observacion);
         this.logger.info(`Issue reported for pesada ${freshDelivery.idPesada}: ${action.observacion}`);
-
-        // If a location is specified, mark it as delivered with 0 kg to close it out
-        if (action.ubicacion) {
-          const location = freshDelivery.locations.find(
-            (l) =>
-              (l.nombre.toLowerCase().includes(action.ubicacion!.toLowerCase()) ||
-                action.ubicacion!.toLowerCase().includes(l.nombre.toLowerCase())) &&
-              l.status === 'pending',
-          );
-
-          if (location) {
-            await this.prismaRepository.deliveryLocation.update({
-              where: { id: location.id },
-              data: {
-                status: 'delivered',
-                deliveredAt: new Date(),
-                kilosDescargados: action.kilos || 0,
-                notes: action.observacion,
-              },
-            });
-
-            this.logger.info(`Location ${location.nombre} closed due to issue for pesada ${freshDelivery.idPesada}`);
-
-            await this.logMessage(
-              freshDelivery.id,
-              'system',
-              `Ubicación "${location.nombre}" cerrada por incidente (${(action.kilos || 0).toLocaleString('es-AR')} kg). Motivo: ${action.observacion}`,
-              'action',
-              {
-                action: 'report_issue',
-                ubicacion: location.nombre,
-                kilos: action.kilos || 0,
-                observacion: action.observacion,
-              },
-            );
-
-            await this.checkDeliveryComplete(freshDelivery.id, instanceName);
-          }
-        }
         return;
       }
 
@@ -925,16 +875,11 @@ IMPORTANTE:
       );
 
       if (locationsWithoutGps.length > 0) {
-        // Don't complete yet — wait for GPS from the last delivery
+        // Don't complete yet — wait for GPS. The AI message already asked for GPS,
+        // so we just silently wait without sending another message.
         this.logger.info(
-          `Delivery ${delivery.idPesada}: all locations delivered but ${locationsWithoutGps.length} missing GPS. Waiting for GPS before completing.`,
+          `Delivery ${delivery.idPesada}: all locations delivered but ${locationsWithoutGps.length} missing GPS. Waiting.`,
         );
-
-        // Ask for GPS for the locations missing it
-        const locationNames = locationsWithoutGps.map((l) => l.nombre).join(', ');
-        const gpsRequestMsg = `📍 Antes de cerrar el reporte, necesito tu ubicación de: ${locationNames}.\n\n👉 Tocá el clip 📎 → Ubicación → *Tu ubicación actual* y enviala.`;
-        await this.sendWhatsAppMessage(instanceName, delivery.remoteJid, gpsRequestMsg);
-        await this.logMessage(deliveryId, 'assistant', gpsRequestMsg);
         return;
       }
 
