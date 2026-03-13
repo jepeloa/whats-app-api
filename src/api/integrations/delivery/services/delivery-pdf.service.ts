@@ -333,20 +333,19 @@ export class DeliveryPdfService {
       doc.image(mapImagePath, 50, doc.y, { width: 495, height: 280 });
       doc.y += 290;
 
-      // Add legend
-      doc.fontSize(9).font('Helvetica').fillColor('#666666');
+      // Add legend with kilos and observations
+      doc.fontSize(9).font('Helvetica').fillColor('#333333');
       const gpsLocations = delivery.locations.filter((l) => l.latitude && l.longitude);
       gpsLocations
         .sort((a, b) => a.orden - b.orden)
         .forEach((loc, i) => {
-          doc.text(
-            `📍 ${i + 1}. ${loc.nombre} (${loc.latitude?.toFixed(4)}, ${loc.longitude?.toFixed(4)})`,
-            55,
-            doc.y,
-            {
-              width: 490,
-            },
-          );
+          const kilos =
+            loc.kilosDescargados != null ? `${loc.kilosDescargados.toLocaleString('es-AR')} kg` : 'Sin datos';
+          let legendLine = `📍 ${i + 1}. ${loc.nombre} — ${kilos}`;
+          if (loc.notes) {
+            legendLine += ` ⚠️ ${loc.notes}`;
+          }
+          doc.text(legendLine, 55, doc.y, { width: 490 });
         });
       doc.fillColor('#000000');
       doc.moveDown(1);
@@ -426,22 +425,57 @@ export class DeliveryPdfService {
         top: t.y,
       }));
 
-      // Create marker circles (red dots) for each GPS location
-      const markerInputs = gpsLocations
+      // Create marker circles (numbered) and label callouts for each GPS location
+      const markerInputs: Array<{ input: Buffer; left: number; top: number }> = [];
+
+      gpsLocations
         .sort((a, b) => a.orden - b.orden)
-        .map((loc) => {
+        .forEach((loc, i) => {
           const px = this.latLngToPixel(loc.latitude!, loc.longitude!, zoom);
-          const markerX = Math.round(px.x - topLeftPx.x) - 8;
-          const markerY = Math.round(px.y - topLeftPx.y) - 8;
-          // Red circle marker SVG
-          const svg = Buffer.from(
-            `<svg width="16" height="16"><circle cx="8" cy="8" r="7" fill="red" stroke="white" stroke-width="2"/></svg>`,
+          const markerX = Math.round(px.x - topLeftPx.x);
+          const markerY = Math.round(px.y - topLeftPx.y);
+          const num = i + 1;
+
+          // Numbered circle marker (red with white number)
+          const markerSvg = Buffer.from(
+            `<svg width="24" height="24">
+              <circle cx="12" cy="12" r="11" fill="#D32F2F" stroke="white" stroke-width="2"/>
+              <text x="12" y="16" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="white" text-anchor="middle">${num}</text>
+            </svg>`,
           );
-          return {
-            input: svg,
-            left: Math.max(0, Math.min(markerX, WIDTH - 16)),
-            top: Math.max(0, Math.min(markerY, HEIGHT - 16)),
-          };
+          markerInputs.push({
+            input: markerSvg,
+            left: Math.max(0, Math.min(markerX - 12, WIDTH - 24)),
+            top: Math.max(0, Math.min(markerY - 12, HEIGHT - 24)),
+          });
+
+          // Build label text: kilos + observation
+          const kilosText = loc.kilosDescargados != null ? `${loc.kilosDescargados.toLocaleString('es-AR')} kg` : '';
+          const obsText = loc.notes ? loc.notes : '';
+          const labelParts = [kilosText, obsText].filter(Boolean);
+          if (labelParts.length === 0) return;
+
+          const labelText = labelParts.join(' | ');
+          // Escape XML special characters
+          const escapedLabel = labelText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+          const labelWidth = Math.min(Math.max(escapedLabel.length * 7 + 16, 80), 280);
+          const labelHeight = 22;
+
+          const labelSvg = Buffer.from(
+            `<svg width="${labelWidth}" height="${labelHeight}">
+              <rect x="0" y="0" width="${labelWidth}" height="${labelHeight}" rx="4" ry="4" fill="white" fill-opacity="0.9" stroke="#D32F2F" stroke-width="1"/>
+              <text x="8" y="15" font-family="Arial,sans-serif" font-size="11" fill="#333">${escapedLabel}</text>
+            </svg>`,
+          );
+
+          // Position label to the right of the marker, offset up slightly
+          const labelLeft = Math.max(0, Math.min(markerX + 14, WIDTH - labelWidth));
+          const labelTop = Math.max(0, Math.min(markerY - labelHeight - 2, HEIGHT - labelHeight));
+          markerInputs.push({
+            input: labelSvg,
+            left: labelLeft,
+            top: labelTop,
+          });
         });
 
       const mapPath = path.join(os.tmpdir(), `map_${Date.now()}.png`);
