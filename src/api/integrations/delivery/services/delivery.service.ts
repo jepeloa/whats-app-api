@@ -528,6 +528,22 @@ IMPORTANTE:
 
     this.logger.info(`Processing message from ${remoteJid} for pesada ${delivery.idPesada}: ${content}`);
 
+    // Check if all locations are delivered but waiting for GPS
+    // If driver sends any text ("no", continues chatting, etc.) → complete without GPS
+    const pendingLocs = delivery.locations.filter((l) => l.status === 'pending');
+    const awaitingGps = delivery.locations.filter(
+      (l) => l.status === 'delivered' && l.latitude == null && l.kilosDescargados && l.kilosDescargados > 0,
+    );
+
+    if (pendingLocs.length === 0 && awaitingGps.length > 0) {
+      this.logger.info(`Driver declined GPS for ${delivery.idPesada}, completing delivery.`);
+      const ackMsg = 'Entendido, cierro la pesada sin ubicación GPS.';
+      await this.sendWhatsAppMessage(instanceName, remoteJid, ackMsg);
+      await this.logMessage(delivery.id, 'assistant', ackMsg);
+      await this.checkDeliveryComplete(delivery.id, instanceName, true);
+      return;
+    }
+
     // Update status to in_progress if still pending
     if (delivery.status === 'pending') {
       await this.prismaRepository.deliveryTracking.update({
@@ -1033,7 +1049,7 @@ Respondé siempre en español, breve y amigable.`;
   /**
    * Check if all locations are delivered and update delivery status
    */
-  private async checkDeliveryComplete(deliveryId: string, instanceName: string) {
+  private async checkDeliveryComplete(deliveryId: string, instanceName: string, forceComplete = false) {
     const delivery = await this.prismaRepository.deliveryTracking.findUnique({
       where: { id: deliveryId },
       include: { locations: { orderBy: { orden: 'asc' } }, messages: true },
@@ -1044,19 +1060,20 @@ Respondé siempre en español, breve y amigable.`;
     const pendingLocations = delivery.locations.filter((l) => l.status === 'pending');
 
     if (pendingLocations.length === 0) {
-      // All locations delivered — log if any are missing GPS but proceed to complete
+      // All locations delivered — check if we're still waiting for GPS
       const locationsWithoutGps = delivery.locations.filter(
         (l) => l.status === 'delivered' && l.latitude == null && l.kilosDescargados && l.kilosDescargados > 0,
       );
 
-      if (locationsWithoutGps.length > 0) {
-        const names = locationsWithoutGps.map((l) => l.nombre).join(', ');
+      if (locationsWithoutGps.length > 0 && !forceComplete) {
+        // Wait for driver to send GPS or decline — don't auto-complete
         this.logger.info(
-          `Delivery ${delivery.idPesada}: completing with ${locationsWithoutGps.length} locations missing GPS (${names}).`,
+          `Delivery ${delivery.idPesada}: all delivered but ${locationsWithoutGps.length} missing GPS. Waiting for response.`,
         );
+        return;
       }
 
-      // All locations delivered - mark as completed
+      // All locations delivered and GPS collected (or not required) - mark as completed
       const confirmedAt = new Date();
       await this.prismaRepository.deliveryTracking.update({
         where: { id: deliveryId },
