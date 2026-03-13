@@ -471,6 +471,43 @@ IMPORTANTE:
     });
 
     if (!delivery) {
+      // No active delivery — check if this is GPS for a recently completed delivery
+      const locationData = this.extractLocationFromMessage(messageRaw);
+      if (locationData) {
+        const recentDelivery = await this.prismaRepository.deliveryTracking.findFirst({
+          where: {
+            remoteJid,
+            instanceId: instance.id,
+            status: 'completed',
+            confirmedAt: { gte: new Date(Date.now() - 30 * 60 * 1000) }, // last 30 minutes
+          },
+          include: { locations: { orderBy: { orden: 'asc' } } },
+          orderBy: { confirmedAt: 'desc' },
+        });
+
+        if (recentDelivery) {
+          const locationWithoutGps = recentDelivery.locations.find(
+            (l) => l.status === 'delivered' && l.latitude == null,
+          );
+          if (locationWithoutGps) {
+            await this.prismaRepository.deliveryLocation.update({
+              where: { id: locationWithoutGps.id },
+              data: {
+                latitude: locationData.latitude,
+                longitude: locationData.longitude,
+                gpsTimestamp: new Date(),
+              },
+            });
+            const thankMsg = `📍 ¡Gracias! Registré la ubicación para ${locationWithoutGps.nombre}.`;
+            await this.sendWhatsAppMessage(instanceName, remoteJid, thankMsg);
+            this.logger.info(
+              `Late GPS saved for completed delivery ${recentDelivery.idPesada}: ${locationWithoutGps.nombre}`,
+            );
+            return;
+          }
+        }
+      }
+
       // No active delivery — respond as general chat or show pending deliveries
       await this.handleNoActiveDelivery(remoteJid, instance.id, instanceName, messageRaw);
       return;
@@ -558,28 +595,29 @@ IMPORTANTE:
     const actionsForAudit = aiResponse.actions.length > 0 ? aiResponse.actions : undefined;
     await this.logMessage(delivery.id, 'assistant', aiResponse.message, 'text', actionsForAudit);
 
-    // Process actions
+    // First pass: handle query_pending to build full message
     for (const action of aiResponse.actions) {
-      if (action.action === 'chat' || action.action === 'request_location') {
-        // No DB action needed — message already includes the text
-        continue;
-      }
-
       if (action.action === 'query_pending') {
-        // Append pending deliveries info to the AI message (sent below)
         const pendingInfo = await this.buildPendingDeliveriesInfo(remoteJid, instance.id);
         if (pendingInfo) {
           aiResponse.message = aiResponse.message ? `${aiResponse.message}\n\n${pendingInfo}` : pendingInfo;
         }
+      }
+    }
+
+    // Send AI message to driver BEFORE processing DB actions
+    // This ensures GPS request arrives before completion summary
+    if (aiResponse.message) {
+      await this.sendWhatsAppMessage(instanceName, remoteJid, aiResponse.message);
+    }
+
+    // Second pass: process DB actions (confirm_delivery, update_delivery, report_issue)
+    for (const action of aiResponse.actions) {
+      if (action.action === 'chat' || action.action === 'request_location' || action.action === 'query_pending') {
         continue;
       }
 
       await this.processSingleAction(delivery, action, instanceName);
-    }
-
-    // Send message to driver
-    if (aiResponse.message) {
-      await this.sendWhatsAppMessage(instanceName, remoteJid, aiResponse.message);
     }
   }
 
