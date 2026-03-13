@@ -184,7 +184,7 @@ REGLAS CRÍTICAS:
 5. Si el camionero NO pudo descargar NADA en una ubicación (cerrada, no estaba el dueño, etc.), usá "confirm_delivery" con kilos:0 y la observación. Ejemplo: "estaba cerrado" → confirm_delivery con kilos:0, observacion:"Local cerrado".
 6. Si dice "el resto", "lo que queda", "todo", usa kilos: -1 (el sistema calcula ${kilosRestantes.toLocaleString('es-AR')} kg).
 7. Valida que los kilos no excedan ${kilosRestantes.toLocaleString('es-AR')} kg restantes.
-8. Después de confirm_delivery, SIEMPRE agrega request_location. En el mensaje pedí la ubicación de forma simple: "📍 ¿Podés compartirme tu ubicación?".
+8. Después de confirm_delivery con kilos > 0, SIEMPRE agrega request_location. En el mensaje pedí la ubicación GPS del celular: "📍 ¿Podés compartirme la ubicación de tu celular?". IMPORTANTE: el sistema bloquea al camionero hasta que envíe la ubicación.
 9. Si el camionero confirma varias ubicaciones en un mensaje, genera un action por cada una, cada uno seguido de request_location.
 10. Si dice "toneladas", multiplicá por 1000.
 11. Detecta "me equivoqué", "en realidad eran", "corrijo" → "update_delivery".
@@ -207,11 +207,11 @@ ACCIONES DISPONIBLES:
 EJEMPLOS:
 
 Camionero: "1 3000kg"
-→ message: "¡Perfecto ${firstName}! Confirmados 3.000 kg en [ubicación 1]. 📍 ¿Podés compartirme tu ubicación?"
+→ message: "¡Perfecto ${firstName}! Confirmados 3.000 kg en [ubicación 1]. 📍 ¿Podés compartirme la ubicación de tu celular?"
 → actions: [{"action":"confirm_delivery","ubicacion":"[nombre ubicación 1]","kilos":3000,"observacion":null}, {"action":"request_location","ubicacion":"[nombre ubicación 1]","kilos":null,"observacion":null}]
 
 Camionero: "2 perdí la mitad, descargue 500"
-→ message: "Registré la descarga de 500 kg y el incidente en [ubicación 2]. 📍 ¿Podés compartirme tu ubicación?"
+→ message: "Registré la descarga de 500 kg y el incidente en [ubicación 2]. 📍 ¿Podés compartirme la ubicación de tu celular?"
 → actions: [{"action":"confirm_delivery","ubicacion":"[nombre ubicación 2]","kilos":500,"observacion":"Pérdida parcial de carga"}, {"action":"request_location","ubicacion":"[nombre ubicación 2]","kilos":null,"observacion":null}]
 
 Camionero: "en 2 no descargue, estaba cerrado"
@@ -219,7 +219,7 @@ Camionero: "en 2 no descargue, estaba cerrado"
 → actions: [{"action":"confirm_delivery","ubicacion":"[nombre ubicación 2]","kilos":0,"observacion":"Local cerrado"}]
 
 Camionero: "Entregué el resto en la terminal"
-→ message: "¡Perfecto ${firstName}! Confirmados los ${kilosRestantes.toLocaleString('es-AR')} kg restantes. 📍 ¿Podés compartirme tu ubicación?"
+→ message: "¡Perfecto ${firstName}! Confirmados los ${kilosRestantes.toLocaleString('es-AR')} kg restantes. 📍 ¿Podés compartirme la ubicación de tu celular?"
 → actions: [{"action":"confirm_delivery","ubicacion":"Terminal Puerto","kilos":-1,"observacion":null}, {"action":"request_location","ubicacion":"Terminal Puerto","kilos":null,"observacion":null}]
 
 Camionero: "Tuve un accidente en la ruta"
@@ -228,13 +228,13 @@ Camionero: "Tuve un accidente en la ruta"
 
 (Contexto: acabas de preguntar "cuántos kilos descargaste en Terminal Sur?")
 Camionero: "5000"
-→ message: "¡Perfecto ${firstName}! Confirmados 5.000 kg en Terminal Sur. 📍 ¿Podés compartirme tu ubicación?"
+→ message: "¡Perfecto ${firstName}! Confirmados 5.000 kg en Terminal Sur. 📍 ¿Podés compartirme la ubicación de tu celular?"
 → actions: [{"action":"confirm_delivery","ubicacion":"Terminal Sur","kilos":5000,"observacion":null}, {"action":"request_location","ubicacion":"Terminal Sur","kilos":null,"observacion":null}]
 
 IMPORTANTE:
 - TODA descarga (con o sin problema) se registra con confirm_delivery.
 - report_issue es SOLO para problemas generales sin ubicación.
-- SIEMPRE pedí ubicación GPS después de confirmar kilos > 0.
+- SIEMPRE pedí ubicación GPS del celular después de confirmar kilos > 0. El sistema bloquea al camionero hasta que envíe la ubicación.
 - Para correcciones de ubicaciones YA ENTREGADAS usá "update_delivery".`;
   }
 
@@ -489,6 +489,23 @@ IMPORTANTE:
       return;
     }
 
+    // GPS BLOCKING: If there are delivered locations waiting for GPS, block text messages
+    const locationsAwaitingGps = delivery.locations.filter(
+      (l) => l.status === 'delivered' && l.latitude == null && l.kilosDescargados && l.kilosDescargados > 0,
+    );
+
+    if (locationsAwaitingGps.length > 0) {
+      const locationNames = locationsAwaitingGps.map((l) => l.nombre).join(', ');
+      const reminderMsg =
+        `📍 Necesito que me compartas la *ubicación de tu celular* para: ${locationNames}.\n\n` +
+        `Usá la función de ubicación de WhatsApp (clip 📎 → Ubicación → Tu ubicación actual).\n\n` +
+        `Hasta que no la envíes no puedo seguir con la pesada.`;
+      await this.sendWhatsAppMessage(instanceName, remoteJid, reminderMsg);
+      await this.logMessage(delivery.id, 'assistant', reminderMsg);
+      this.logger.info(`GPS blocking: waiting for GPS from ${remoteJid} for locations: ${locationNames}`);
+      return;
+    }
+
     this.logger.info(`Processing message from ${remoteJid} for pesada ${delivery.idPesada}: ${content}`);
 
     // Update status to in_progress if still pending
@@ -613,7 +630,7 @@ IMPORTANTE:
         locationData,
       );
 
-      const thankMsg = `📍 ¡Perfecto! Registré tu ubicación para ${locationWithoutGps.nombre}. Gracias!`;
+      const thankMsg = `📍 ¡Perfecto! Registré la ubicación de tu celular para ${locationWithoutGps.nombre}. ¡Gracias!`;
       await this.sendWhatsAppMessage(instanceName, delivery.remoteJid, thankMsg);
       await this.logMessage(delivery.id, 'assistant', thankMsg);
 
@@ -624,6 +641,20 @@ IMPORTANTE:
       // After saving GPS, re-check if all locations are now complete
       // (this handles the case where we were waiting for GPS before closing)
       await this.checkDeliveryComplete(delivery.id, instanceName);
+
+      // After GPS saved, check if there are still pending locations and nudge
+      const freshDelivery = await this.prismaRepository.deliveryTracking.findUnique({
+        where: { id: delivery.id },
+        include: { locations: { orderBy: { orden: 'asc' } } },
+      });
+      if (freshDelivery && freshDelivery.status !== 'completed') {
+        const nextPending = freshDelivery.locations.find((l) => l.status === 'pending');
+        if (nextPending) {
+          const nudgeMsg = `👉 La siguiente entrega es en *${nextPending.nombre}* (${nextPending.direccion}). ¿Cuántos kilos descargaste ahí?`;
+          await this.sendWhatsAppMessage(instanceName, delivery.remoteJid, nudgeMsg);
+          await this.logMessage(delivery.id, 'assistant', nudgeMsg);
+        }
+      }
     } else {
       // All locations already have GPS, or none delivered yet
       const infoMsg = '📍 Recibí tu ubicación. ¡Gracias!';
