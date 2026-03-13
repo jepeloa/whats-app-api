@@ -1,4 +1,6 @@
 import * as fs from 'fs';
+import * as http from 'http';
+import * as https from 'https';
 import * as os from 'os';
 import * as path from 'path';
 import PDFDocument from 'pdfkit';
@@ -25,6 +27,8 @@ interface DeliveryPdfData {
     status: string;
     deliveredAt?: Date | null;
     orden: number;
+    latitude?: number | null;
+    longitude?: number | null;
   }>;
 }
 
@@ -38,6 +42,14 @@ export class DeliveryPdfService {
   async generateDeliveryReport(delivery: DeliveryPdfData): Promise<string> {
     const fileName = `reporte_pesada_${delivery.idPesada}_${Date.now()}.pdf`;
     const filePath = path.join(os.tmpdir(), fileName);
+
+    // Download map image if locations have GPS
+    let mapImagePath: string | null = null;
+    try {
+      mapImagePath = await this.downloadMapImage(delivery.locations);
+    } catch (err) {
+      this.logger.warn(`Could not generate map image: ${err.message}`);
+    }
 
     return new Promise((resolve, reject) => {
       try {
@@ -58,6 +70,11 @@ export class DeliveryPdfService {
         // Summary
         this.addSummary(doc, delivery);
 
+        // Mini Map
+        if (mapImagePath) {
+          this.addMap(doc, delivery, mapImagePath);
+        }
+
         // Observations
         if (delivery.observaciones) {
           this.addObservations(doc, delivery.observaciones);
@@ -70,15 +87,25 @@ export class DeliveryPdfService {
 
         stream.on('finish', () => {
           this.logger.info(`PDF generated: ${filePath}`);
+          // Cleanup map image
+          if (mapImagePath && fs.existsSync(mapImagePath)) {
+            fs.unlinkSync(mapImagePath);
+          }
           resolve(filePath);
         });
 
         stream.on('error', (error) => {
           this.logger.error(`Error generating PDF: ${error.message}`);
+          if (mapImagePath && fs.existsSync(mapImagePath)) {
+            fs.unlinkSync(mapImagePath);
+          }
           reject(error);
         });
       } catch (error) {
         this.logger.error(`Error creating PDF: ${error.message}`);
+        if (mapImagePath && fs.existsSync(mapImagePath)) {
+          fs.unlinkSync(mapImagePath);
+        }
         reject(error);
       }
     });
@@ -286,6 +313,143 @@ export class DeliveryPdfService {
       timeZone: 'America/Argentina/Buenos_Aires',
       hour: '2-digit',
       minute: '2-digit',
+    });
+  }
+
+  /**
+   * Add map section to PDF showing GPS locations of deliveries
+   */
+  private addMap(doc: PDFKit.PDFDocument, delivery: DeliveryPdfData, mapImagePath: string) {
+    // Check if we need a new page
+    if (doc.y > 500) {
+      doc.addPage();
+    }
+
+    doc.fontSize(14).font('Helvetica-Bold').fillColor('#000000').text('MAPA DE ENTREGAS');
+    doc.moveDown(0.5);
+
+    try {
+      // Insert the map image
+      doc.image(mapImagePath, 50, doc.y, { width: 495, height: 280 });
+      doc.y += 290;
+
+      // Add legend
+      doc.fontSize(9).font('Helvetica').fillColor('#666666');
+      const gpsLocations = delivery.locations.filter((l) => l.latitude && l.longitude);
+      gpsLocations
+        .sort((a, b) => a.orden - b.orden)
+        .forEach((loc, i) => {
+          doc.text(
+            `📍 ${i + 1}. ${loc.nombre} (${loc.latitude?.toFixed(4)}, ${loc.longitude?.toFixed(4)})`,
+            55,
+            doc.y,
+            {
+              width: 490,
+            },
+          );
+        });
+      doc.fillColor('#000000');
+      doc.moveDown(1);
+    } catch (err) {
+      this.logger.warn(`Could not embed map image in PDF: ${err.message}`);
+    }
+  }
+
+  /**
+   * Download a static map image for locations with GPS coordinates
+   * Uses OpenStreetMap static map service (free, no API key)
+   */
+  private async downloadMapImage(locations: DeliveryPdfData['locations']): Promise<string | null> {
+    const gpsLocations = locations.filter((l) => l.latitude && l.longitude && l.status === 'delivered');
+
+    if (gpsLocations.length === 0) {
+      return null;
+    }
+
+    // Calculate center and zoom from coordinates
+    const lats = gpsLocations.map((l) => l.latitude!);
+    const lngs = gpsLocations.map((l) => l.longitude!);
+    const centerLat = (Math.min(...lats) + Math.max(...lats)) / 2;
+    const centerLng = (Math.min(...lngs) + Math.max(...lngs)) / 2;
+
+    // Estimate zoom level based on coordinate spread
+    const latSpread = Math.max(...lats) - Math.min(...lats);
+    const lngSpread = Math.max(...lngs) - Math.min(...lngs);
+    const maxSpread = Math.max(latSpread, lngSpread);
+    let zoom = 12;
+    if (maxSpread > 5) zoom = 6;
+    else if (maxSpread > 2) zoom = 7;
+    else if (maxSpread > 1) zoom = 8;
+    else if (maxSpread > 0.5) zoom = 9;
+    else if (maxSpread > 0.2) zoom = 10;
+    else if (maxSpread > 0.1) zoom = 11;
+    else if (maxSpread > 0.05) zoom = 12;
+    else zoom = 13;
+
+    // Use staticmap.openstreetmap.de (free OSM static maps)
+    const markerParams = gpsLocations
+      .sort((a, b) => a.orden - b.orden)
+      .map((loc) => `markers=${loc.latitude},${loc.longitude},ol-marker`)
+      .join('&');
+
+    const url = `https://staticmap.openstreetmap.de/staticmap.php?center=${centerLat},${centerLng}&zoom=${zoom}&size=800x400&maptype=mapnik&${markerParams}`;
+
+    const mapPath = path.join(os.tmpdir(), `map_${Date.now()}.png`);
+
+    return new Promise((resolve) => {
+      const request = https.get(url, { timeout: 10000 }, (response) => {
+        // Handle redirects
+        if (
+          response.statusCode &&
+          response.statusCode >= 300 &&
+          response.statusCode < 400 &&
+          response.headers.location
+        ) {
+          const redirectUrl = response.headers.location;
+          const protocol = redirectUrl.startsWith('https') ? https : http;
+          protocol
+            .get(redirectUrl, { timeout: 10000 }, (redirectRes) => {
+              if (redirectRes.statusCode !== 200) {
+                this.logger.warn(`Map redirect failed with status ${redirectRes.statusCode}`);
+                resolve(null);
+                return;
+              }
+              const file = fs.createWriteStream(mapPath);
+              redirectRes.pipe(file);
+              file.on('finish', () => {
+                file.close();
+                resolve(mapPath);
+              });
+              file.on('error', () => resolve(null));
+            })
+            .on('error', () => resolve(null));
+          return;
+        }
+
+        if (response.statusCode !== 200) {
+          this.logger.warn(`Map download failed with status ${response.statusCode}`);
+          resolve(null);
+          return;
+        }
+
+        const file = fs.createWriteStream(mapPath);
+        response.pipe(file);
+        file.on('finish', () => {
+          file.close();
+          resolve(mapPath);
+        });
+        file.on('error', () => resolve(null));
+      });
+
+      request.on('error', (err) => {
+        this.logger.warn(`Map download error: ${err.message}`);
+        resolve(null);
+      });
+
+      request.on('timeout', () => {
+        request.destroy();
+        resolve(null);
+      });
     });
   }
 

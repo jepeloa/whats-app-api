@@ -818,6 +818,9 @@ model DeliveryLocation {
   status             DeliveryLocationStatus @default(pending)
   kilosDescargados   Float?                 @db.DoublePrecision
   deliveredAt        DateTime?              @db.Timestamp
+  latitude           Float?                 @db.DoublePrecision
+  longitude          Float?                 @db.DoublePrecision
+  gpsTimestamp       DateTime?              @db.Timestamp
   notes              String?                @db.Text
   createdAt          DateTime               @default(now()) @db.Timestamp
   updatedAt          DateTime               @updatedAt @db.Timestamp
@@ -831,6 +834,8 @@ model DeliveryMessage {
   id                 String           @id @default(cuid())
   role               String           @db.VarChar(20) // user, assistant, system
   content            String           @db.Text
+  messageType        String           @default("text") @db.VarChar(20) // text, location, audio, image, action
+  actionData         Json?            @db.JsonB
   timestamp          DateTime         @default(now()) @db.Timestamp
   DeliveryTracking   DeliveryTracking @relation(fields: [deliveryTrackingId], references: [id], onDelete: Cascade)
   deliveryTrackingId String

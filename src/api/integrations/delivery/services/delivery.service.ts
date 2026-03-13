@@ -11,6 +11,72 @@ import { CreateDeliveryDto } from '../dto/delivery.dto';
 import { DeliveryEmailService } from './delivery-email.service';
 import { DeliveryPdfService } from './delivery-pdf.service';
 
+/**
+ * JSON Schema for OpenAI Structured Outputs
+ * Guarantees valid JSON responses from the model
+ */
+const DELIVERY_RESPONSE_SCHEMA = {
+  name: 'delivery_response',
+  strict: true,
+  schema: {
+    type: 'object',
+    properties: {
+      message: {
+        type: 'string',
+        description: 'Mensaje amigable y breve para el camionero (máximo 2 oraciones)',
+      },
+      actions: {
+        type: 'array',
+        description: 'Lista de acciones a ejecutar. Vacío si es solo conversación.',
+        items: {
+          type: 'object',
+          properties: {
+            action: {
+              type: 'string',
+              enum: [
+                'confirm_delivery',
+                'update_delivery',
+                'report_issue',
+                'request_location',
+                'chat',
+                'query_pending',
+              ],
+              description:
+                'confirm_delivery: confirmar entrega en ubicación. update_delivery: corregir kilos ya entregados. report_issue: reportar problema. request_location: pedir ubicación GPS. chat: conversación general. query_pending: consulta sobre pesadas pendientes.',
+            },
+            ubicacion: {
+              type: ['string', 'null'],
+              description: 'Nombre exacto de la ubicación (solo para confirm_delivery y update_delivery)',
+            },
+            kilos: {
+              type: ['number', 'null'],
+              description: 'Kilos descargados. -1 significa "el resto". Null si no aplica.',
+            },
+            observacion: {
+              type: ['string', 'null'],
+              description: 'Observación sobre problemas, incidentes o notas. Null si no hay.',
+            },
+          },
+          required: ['action', 'ubicacion', 'kilos', 'observacion'],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ['message', 'actions'],
+    additionalProperties: false,
+  },
+} as const;
+
+interface AIResponse {
+  message: string;
+  actions: Array<{
+    action: 'confirm_delivery' | 'update_delivery' | 'report_issue' | 'request_location' | 'chat' | 'query_pending';
+    ubicacion: string | null;
+    kilos: number | null;
+    observacion: string | null;
+  }>;
+}
+
 export class DeliveryService {
   private readonly logger = new Logger('DeliveryService');
   private openaiClient: OpenAI;
@@ -66,6 +132,7 @@ ${data.ubicaciones.length > 1 ? `Ubicaciones de descarga:\n${ubicacionesList}` :
 
   /**
    * Build the system prompt for OpenAI to process driver responses
+   * Supports structured outputs — no manual JSON parsing needed
    */
   private buildSystemPrompt(delivery: DeliveryTracking & { locations: any[] }): string {
     const pendingLocations = delivery.locations
@@ -86,7 +153,17 @@ ${data.ubicaciones.length > 1 ? `Ubicaciones de descarga:\n${ubicacionesList}` :
 
     const firstName = delivery.choferNombre.split(' ')[0];
 
-    return `Eres un asistente de logística. Ayudas al camionero ${firstName} con la pesada #${delivery.idPesada}.
+    // Check which delivered locations are missing GPS
+    const deliveredWithoutGps = delivery.locations
+      .filter((l) => l.status === 'delivered' && l.latitude == null)
+      .map((l) => l.nombre);
+
+    const gpsNote =
+      deliveredWithoutGps.length > 0
+        ? `\nUBICACIONES SIN GPS: ${deliveredWithoutGps.join(', ')}. Después de confirmar entrega, pedí la ubicación GPS al camionero.`
+        : '';
+
+    return `Eres un asistente de logística y también un asistente general para el camionero ${firstName}. Tu trabajo principal es ayudar con la pesada #${delivery.idPesada}, pero también podés responder preguntas generales.
 
 PESO TOTAL A ENTREGAR: ${delivery.pesoNeto.toLocaleString('es-AR')} ${delivery.pesoUn}
 KILOS YA DESCARGADOS: ${kilosDescargados.toLocaleString('es-AR')} kg
@@ -97,76 +174,69 @@ ${pendingLocations || 'Ninguna'}
 
 UBICACIONES ENTREGADAS:
 ${deliveredLocations || 'Ninguna'}
+${gpsNote}
 
-INSTRUCCIONES CRÍTICAS:
+INSTRUCCIONES PARA ENTREGAS:
 1. Responde de forma MUY BREVE y amigable (máximo 2 oraciones).
-2. **IMPORTANTE**: Cuando el camionero confirme una entrega, SIEMPRE pregunta cuántos kilos descargó si no lo mencionó.
-3. Si el camionero menciona un problema (accidente, rotura, robo, pérdida, derrame, etc.), registra el problema como observación.
+2. Cuando el camionero confirme una entrega, SIEMPRE pregunta cuántos kilos descargó si no lo mencionó.
+3. Si el camionero menciona un problema (accidente, rotura, robo, pérdida, derrame, etc.), registra con "report_issue".
 4. Si quedan ubicaciones pendientes, recuérdale la siguiente ubicación.
-5. **CORRECCIONES**: Si el camionero corrige los kilos de una ubicación ya entregada, usa "update_delivery" para actualizar.
-6. **EL RESTO**: Si dice "el resto", "lo que queda", "todo lo demás", usa kilos: -1 y el sistema calculará automáticamente ${kilosRestantes.toLocaleString('es-AR')} kg.
+5. Para CORRECCIONES de kilos ya entregados, usa "update_delivery".
+6. Si dice "el resto", "lo que queda", "todo lo demás", usa kilos: -1 (el sistema calcula ${kilosRestantes.toLocaleString('es-AR')} kg).
 7. Valida que los kilos no excedan ${kilosRestantes.toLocaleString('es-AR')} kg restantes.
+8. Después de confirmar una entrega con kilos, SIEMPRE agrega una action "request_location" para pedir la ubicación GPS.
+9. Si el camionero confirma varias ubicaciones en un mensaje, genera un action por cada una.
+10. Si dice "toneladas", multiplicá por 1000 para obtener kilos.
+11. Detecta frases como "me equivoqué", "en realidad eran", "no, eran", "corrijo" como señales de corrección → usa "update_delivery".
 
-FORMATO DE RESPUESTA:
-- Para confirmar entrega CON kilos: mensaje + JSON al final
-- Para preguntar kilos: solo mensaje (sin JSON)
-- Para registrar problema: mensaje + JSON con observacion
-- Para CORREGIR kilos ya reportados: mensaje + JSON con action "update_delivery"
-- Para "el resto": mensaje + JSON con kilos: -1
-- **MÚLTIPLES UBICACIONES**: Si el camionero confirma varias ubicaciones en un mensaje, genera un JSON por cada ubicación (cada uno en línea separada después del separador)
+INSTRUCCIONES PARA CHAT GENERAL:
+- Si el camionero pregunta algo NO relacionado con la entrega (ej: "¿cómo está el clima?", "¿dónde queda tal lugar?"), respondé amablemente con action "chat".
+- Si pregunta "¿cuántas pesadas tengo pendientes?" o similar, usa action "query_pending".
+- Si pregunta "¿a dónde me queda ir?" o "¿qué me falta?", respondé con las ubicaciones pendientes y usa action "chat".
+- Nunca te rompas ni ignores un mensaje. Siempre respondé algo útil.
 
-JSON (va en línea separada precedido por ---JSON---):
-{"action": "confirm_delivery", "ubicacion": "NOMBRE_EXACTO", "kilos": NUMERO_O_-1, "observacion": "OBLIGATORIO si menciona problema"}
-{"action": "update_delivery", "ubicacion": "NOMBRE_EXACTO", "kilos": NUMERO_O_-1, "observacion": "texto opcional"}
-{"action": "report_issue", "observacion": "descripción del problema"}
+ACCIONES DISPONIBLES:
+- "confirm_delivery": confirmar entrega (requiere ubicacion, kilos, observacion opcional)
+- "update_delivery": corregir kilos ya entregados (requiere ubicacion, kilos)
+- "report_issue": reportar problema (requiere observacion)
+- "request_location": pedir ubicación GPS después de una confirmación
+- "chat": conversación general sin acción sobre la entrega
+- "query_pending": consulta sobre pesadas pendientes del camionero
 
 EJEMPLOS:
 
-Usuario: "Entregué en Aceitera"
-Respuesta: "¡Bien ${firstName}! ¿Cuántos kilos descargaste en Aceitera?"
+Camionero: "Entregué en Aceitera"
+→ message: "¡Bien ${firstName}! ¿Cuántos kilos descargaste en Aceitera?"
+→ actions: [] (no confirmar sin kilos)
 
-Usuario: "Entregué 15000 kilos en Aceitera"
-Respuesta: "¡Perfecto ${firstName}! Confirmados 15.000 kg en Aceitera. Avisame cuando llegues a Terminal Puerto Rosario.
----JSON---
-{"action": "confirm_delivery", "ubicacion": "Aceitera General Deheza", "kilos": 15000}"
+Camionero: "Entregué 15000 kilos en Aceitera"
+→ message: "¡Perfecto ${firstName}! Confirmados 15.000 kg en Aceitera. 📍 ¿Podés compartirme tu ubicación? (clip 📎 → Ubicación)"
+→ actions: [{"action":"confirm_delivery","ubicacion":"Aceitera General Deheza","kilos":15000,"observacion":null}, {"action":"request_location","ubicacion":"Aceitera General Deheza","kilos":null,"observacion":null}]
 
-Usuario: "Descargué el resto en la terminal"
-Respuesta: "¡Perfecto ${firstName}! Confirmados los ${kilosRestantes.toLocaleString('es-AR')} kg restantes en Terminal Puerto Rosario.
----JSON---
-{"action": "confirm_delivery", "ubicacion": "Terminal Puerto Rosario", "kilos": -1}"
+Camionero: "Descargué el resto en la terminal"
+→ message: "¡Perfecto ${firstName}! Confirmados los ${kilosRestantes.toLocaleString('es-AR')} kg restantes. 📍 Compartime tu ubicación."
+→ actions: [{"action":"confirm_delivery","ubicacion":"Terminal Puerto Rosario","kilos":-1,"observacion":null}, {"action":"request_location","ubicacion":"Terminal Puerto Rosario","kilos":null,"observacion":null}]
 
-Usuario: "Bajé 30000 kilos pero tuve un robo en la ruta"
-Respuesta: "Lamento escuchar eso ${firstName}. Confirmados 30.000 kg y registré el robo.
----JSON---
-{"action": "confirm_delivery", "ubicacion": "Terminal Puerto Rosario", "kilos": 30000, "observacion": "Robo en la ruta"}"
+Camionero: "Tuve un accidente"
+→ message: "Lamento escuchar eso ${firstName}. ¿Pudiste entregar algo? Registré el incidente."
+→ actions: [{"action":"report_issue","ubicacion":null,"kilos":null,"observacion":"Accidente reportado por el camionero"}]
 
-Usuario: "Entregué 25000 en el puerto, me faltaron 5000 por un accidente"
-Respuesta: "Entendido ${firstName}. Confirmados 25.000 kg, registré el accidente.
----JSON---
-{"action": "confirm_delivery", "ubicacion": "Puerto", "kilos": 25000, "observacion": "Faltaron 5000 kg por accidente"}"
+Camionero: "¿A dónde me queda ir?"
+→ message: "Te quedan estas ubicaciones pendientes: [lista]. La próxima es [nombre]."
+→ actions: [{"action":"chat","ubicacion":null,"kilos":null,"observacion":null}]
 
-Usuario: "No, en Aceitera eran 16000 kilos"
-Respuesta: "Corregido ${firstName}. Actualicé a 16.000 kg en Aceitera.
----JSON---
-{"action": "update_delivery", "ubicacion": "Aceitera General Deheza", "kilos": 16000}"
+Camionero: "¿Cuántas pesadas tengo?"
+→ message: "Dejame verificar tus pesadas pendientes..."
+→ actions: [{"action":"query_pending","ubicacion":null,"kilos":null,"observacion":null}]
 
-Usuario: "Tuve un accidente, se rompió la bolsa y perdí mercadería"
-Respuesta: "Lamento escuchar eso ${firstName}. ¿Pudiste entregar algo en alguna ubicación? Registré el incidente.
----JSON---
-{"action": "report_issue", "observacion": "Accidente con rotura de bolsa, pérdida de mercadería"}"
+Camionero: "Hola, buen día"
+→ message: "¡Buen día ${firstName}! ¿Cómo va el viaje? Avisame cuando hagas alguna descarga."
+→ actions: [{"action":"chat","ubicacion":null,"kilos":null,"observacion":null}]
 
-Usuario: "Descargué 10000 en la primera y 15000 en la segunda"
-Respuesta: "¡Perfecto ${firstName}! Confirmados 10.000 kg en Molino Norte y 15.000 kg en Acopio Central.
----JSON---
-{"action": "confirm_delivery", "ubicacion": "Molino Norte", "kilos": 10000}
-{"action": "confirm_delivery", "ubicacion": "Acopio Central", "kilos": 15000}"
-
-IMPORTANTE: 
-- **SIEMPRE incluye "observacion" en el JSON cuando el camionero mencione: robo, accidente, pérdida, rotura, faltante, problema, derrame, o cualquier incidente.**
+IMPORTANTE:
+- SIEMPRE incluye "observacion" cuando el camionero mencione: robo, accidente, pérdida, rotura, faltante, problema, derrame.
 - Para correcciones de ubicaciones YA ENTREGADAS usa "update_delivery", no "confirm_delivery".
-- Si dice "toneladas", multiplica por 1000 para obtener kilos.
-- Si dice "el resto", "lo que queda", "todo", usa kilos: -1 (el sistema calcula los ${kilosRestantes.toLocaleString('es-AR')} kg automáticamente).
-- Detecta frases como "me equivoqué", "en realidad eran", "no, eran", "corrijo" como señales de corrección.`;
+- Si el mensaje no requiere ninguna acción de entrega, usa "chat" como action.`;
   }
 
   /**
@@ -337,16 +407,45 @@ IMPORTANTE:
   }
 
   /**
-   * Log a message for audit
+   * Log a message for audit with optional type and action data
    */
-  private async logMessage(deliveryTrackingId: string, role: string, content: string) {
+  private async logMessage(
+    deliveryTrackingId: string,
+    role: string,
+    content: string,
+    messageType: string = 'text',
+    actionData?: any,
+  ) {
     await this.prismaRepository.deliveryMessage.create({
       data: {
         deliveryTrackingId,
         role,
         content,
+        messageType,
+        actionData: actionData || undefined,
       },
     });
+  }
+
+  /**
+   * Extract location data from a WhatsApp message if present
+   */
+  private extractLocationFromMessage(messageRaw: any): { latitude: number; longitude: number } | null {
+    const locationMsg = messageRaw?.message?.locationMessage;
+    if (locationMsg && locationMsg.degreesLatitude && locationMsg.degreesLongitude) {
+      return {
+        latitude: locationMsg.degreesLatitude,
+        longitude: locationMsg.degreesLongitude,
+      };
+    }
+    const liveLocationMsg = messageRaw?.message?.liveLocationMessage;
+    if (liveLocationMsg && liveLocationMsg.degreesLatitude && liveLocationMsg.degreesLongitude) {
+      return {
+        latitude: liveLocationMsg.degreesLatitude,
+        longitude: liveLocationMsg.degreesLongitude,
+      };
+    }
+    return null;
   }
 
   /**
@@ -373,11 +472,18 @@ IMPORTANTE:
     });
 
     if (!delivery) {
-      // No active delivery for this phone, ignore message
+      // No active delivery — handle as general chat if desired (future: could respond generically)
       return;
     }
 
-    // Extract message content - pass the raw message object (not messageRaw.message)
+    // Check if this is a location message (GPS)
+    const locationData = this.extractLocationFromMessage(messageRaw);
+    if (locationData) {
+      await this.handleLocationMessage(delivery, locationData, instanceName);
+      return;
+    }
+
+    // Extract message content
     const content = getConversationMessage(messageRaw);
     if (!content) {
       return;
@@ -398,14 +504,17 @@ IMPORTANTE:
       });
     }
 
+    // Detect message type for audit
+    const msgType = this.detectMessageType(messageRaw);
+
     // Log incoming message for audit
-    await this.logMessage(delivery.id, 'user', content);
+    await this.logMessage(delivery.id, 'user', content, msgType);
 
     // Get conversation history for context
     const messages = await this.prismaRepository.deliveryMessage.findMany({
       where: { deliveryTrackingId: delivery.id },
       orderBy: { timestamp: 'asc' },
-      take: 20, // Last 20 messages
+      take: 20,
     });
 
     // Build messages for OpenAI
@@ -419,116 +528,141 @@ IMPORTANTE:
         })),
     ];
 
-    // Get AI response
+    // Get AI response with structured outputs
     const aiResponse = await this.getAIResponse(openaiMessages);
     if (!aiResponse) {
       return;
     }
 
-    this.logger.verbose(`Full AI response for pesada ${delivery.idPesada}: ${aiResponse}`);
+    this.logger.verbose(`AI structured response for pesada ${delivery.idPesada}: ${JSON.stringify(aiResponse)}`);
 
-    // Extract clean message (without JSON) for sending to user
-    const { cleanMessage, jsonPart: initialJsonPart } = this.extractJsonFromResponse(aiResponse);
-    let jsonPart = initialJsonPart;
+    // Log AI response for audit, including actions
+    const actionsForAudit = aiResponse.actions.length > 0 ? aiResponse.actions : undefined;
+    await this.logMessage(delivery.id, 'assistant', aiResponse.message, 'text', actionsForAudit);
 
-    // Log full AI response for audit
-    await this.logMessage(delivery.id, 'assistant', cleanMessage);
+    // Process actions
+    for (const action of aiResponse.actions) {
+      if (action.action === 'chat' || action.action === 'request_location') {
+        // No DB action needed — message already includes the text
+        continue;
+      }
 
-    // Retry: if no JSON found but there are pending locations and the response mentions delivery-related words
-    if (!jsonPart && delivery.locations.some((l) => l.status === 'pending')) {
-      const deliveryKeywords = /\b(confirm|kilos?|kg|descarg|entreg|listo|perfecto|excelente|anotado|registr)/i;
-      if (deliveryKeywords.test(aiResponse)) {
-        this.logger.warn(
-          `No JSON action found but response seems delivery-related for pesada ${delivery.idPesada}. Retrying...`,
-        );
-
-        const retryMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [
-          {
-            role: 'system',
-            content: `Tu respuesta anterior fue:
-"${aiResponse}"
-
-Genera SOLAMENTE el/los JSON de acción correspondientes a esa respuesta. Sin texto, sin explicación, solo JSON.
-Cada JSON en una línea separada. Formato:
-{"action": "confirm_delivery", "ubicacion": "NOMBRE_EXACTO", "kilos": NUMERO}
-{"action": "update_delivery", "ubicacion": "NOMBRE_EXACTO", "kilos": NUMERO}
-{"action": "report_issue", "observacion": "descripción"}
-
-Ubicaciones pendientes: ${delivery.locations
-              .filter((l) => l.status === 'pending')
-              .map((l) => l.nombre)
-              .join(', ')}
-Ubicaciones entregadas: ${delivery.locations
-              .filter((l) => l.status === 'delivered')
-              .map((l) => l.nombre)
-              .join(', ')}`,
-          },
-          { role: 'user', content: content },
-        ];
-
-        const retryResponse = await this.getAIResponse(retryMessages);
-        if (retryResponse) {
-          this.logger.info(`Retry response for pesada ${delivery.idPesada}: ${retryResponse}`);
-          // The retry response should be pure JSON lines
-          const retryExtract = this.extractJsonFromResponse(retryResponse);
-          if (retryExtract.jsonPart) {
-            jsonPart = retryExtract.jsonPart;
-          } else {
-            // Try the whole response as JSON directly
-            jsonPart = retryResponse;
-          }
+      if (action.action === 'query_pending') {
+        // Build response with pending deliveries for this driver
+        const pendingInfo = await this.buildPendingDeliveriesInfo(remoteJid, instance.id);
+        if (pendingInfo) {
+          await this.sendWhatsAppMessage(instanceName, remoteJid, pendingInfo);
+          await this.logMessage(delivery.id, 'assistant', pendingInfo, 'text');
         }
+        continue;
       }
+
+      await this.processSingleAction(delivery, action, instanceName);
     }
 
-    // Process JSON action if present
-    if (jsonPart) {
-      await this.processAIResponse(delivery, jsonPart, instanceName);
-    }
-
-    // Send clean response to driver (without JSON)
-    if (cleanMessage) {
-      await this.sendWhatsAppMessage(instanceName, remoteJid, cleanMessage);
+    // Send message to driver
+    if (aiResponse.message) {
+      await this.sendWhatsAppMessage(instanceName, remoteJid, aiResponse.message);
     }
   }
 
   /**
-   * Extract JSON from AI response (separated by ---JSON---)
+   * Detect message type from raw WhatsApp message
    */
-  private extractJsonFromResponse(response: string): { cleanMessage: string; jsonPart: string | null } {
-    // Check for ---JSON--- separator
-    const jsonSeparator = '---JSON---';
-    const separatorIndex = response.indexOf(jsonSeparator);
-
-    if (separatorIndex !== -1) {
-      const cleanMessage = response.substring(0, separatorIndex).trim();
-      const jsonPart = response.substring(separatorIndex + jsonSeparator.length).trim();
-      return { cleanMessage, jsonPart };
-    }
-
-    // Fallback: try to find any JSON action inline (all action types)
-    const jsonMatches = response.match(
-      /\{[^{}]*"action"\s*:\s*"(?:confirm_delivery|update_delivery|report_issue)"[^{}]*\}/g,
-    );
-    if (jsonMatches && jsonMatches.length > 0) {
-      let cleanMessage = response;
-      for (const m of jsonMatches) {
-        cleanMessage = cleanMessage.replace(m, '');
-      }
-      cleanMessage = cleanMessage
-        .replace(/```json\s*```/g, '')
-        .replace(/```/g, '')
-        .trim();
-      return { cleanMessage, jsonPart: jsonMatches.join('\n') };
-    }
-
-    return { cleanMessage: response, jsonPart: null };
+  private detectMessageType(messageRaw: any): string {
+    if (messageRaw?.message?.locationMessage || messageRaw?.message?.liveLocationMessage) return 'location';
+    if (messageRaw?.message?.audioMessage || messageRaw?.message?.speechToText) return 'audio';
+    if (messageRaw?.message?.imageMessage) return 'image';
+    if (messageRaw?.message?.documentMessage) return 'document';
+    return 'text';
   }
 
   /**
-   * Get AI response using OpenAI
+   * Handle a GPS location message from the driver
+   * Associates it with the most recent delivered location that lacks GPS
    */
-  private async getAIResponse(messages: OpenAI.Chat.ChatCompletionMessageParam[]): Promise<string | null> {
+  private async handleLocationMessage(
+    delivery: DeliveryTracking & { locations: any[] },
+    locationData: { latitude: number; longitude: number },
+    instanceName: string,
+  ) {
+    // Find the most recently delivered location without GPS
+    const locationWithoutGps = delivery.locations
+      .filter((l: any) => l.status === 'delivered' && l.latitude == null)
+      .sort((a: any, b: any) => {
+        // Most recently delivered first
+        const aTime = a.deliveredAt ? new Date(a.deliveredAt).getTime() : 0;
+        const bTime = b.deliveredAt ? new Date(b.deliveredAt).getTime() : 0;
+        return bTime - aTime;
+      })[0];
+
+    if (locationWithoutGps) {
+      await this.prismaRepository.deliveryLocation.update({
+        where: { id: locationWithoutGps.id },
+        data: {
+          latitude: locationData.latitude,
+          longitude: locationData.longitude,
+          gpsTimestamp: new Date(),
+        },
+      });
+
+      await this.logMessage(
+        delivery.id,
+        'system',
+        `GPS recibido para "${locationWithoutGps.nombre}": ${locationData.latitude}, ${locationData.longitude}`,
+        'location',
+        locationData,
+      );
+
+      const thankMsg = `📍 ¡Perfecto! Registré tu ubicación para ${locationWithoutGps.nombre}. Gracias!`;
+      await this.sendWhatsAppMessage(instanceName, delivery.remoteJid, thankMsg);
+      await this.logMessage(delivery.id, 'assistant', thankMsg);
+
+      this.logger.info(
+        `GPS saved for location ${locationWithoutGps.nombre}: ${locationData.latitude}, ${locationData.longitude}`,
+      );
+    } else {
+      // All locations already have GPS, or none delivered yet
+      const infoMsg = '📍 Recibí tu ubicación. ¡Gracias!';
+      await this.sendWhatsAppMessage(instanceName, delivery.remoteJid, infoMsg);
+      await this.logMessage(delivery.id, 'assistant', infoMsg, 'location', locationData);
+    }
+  }
+
+  /**
+   * Build info about pending deliveries for this driver
+   */
+  private async buildPendingDeliveriesInfo(remoteJid: string, instanceId: string): Promise<string | null> {
+    const pendingDeliveries = await this.prismaRepository.deliveryTracking.findMany({
+      where: {
+        remoteJid,
+        instanceId,
+        status: { in: ['pending', 'in_progress'] },
+      },
+      include: { locations: { orderBy: { orden: 'asc' } } },
+    });
+
+    if (pendingDeliveries.length === 0) {
+      return '✅ No tenés pesadas pendientes en este momento.';
+    }
+
+    let info = `📋 *Tus pesadas activas:*\n`;
+    for (const d of pendingDeliveries) {
+      const pending = d.locations.filter((l) => l.status === 'pending').length;
+      const delivered = d.locations.filter((l) => l.status === 'delivered').length;
+      info += `\n• *${d.idPesada}* - ${d.artNombre}\n  ${delivered}/${d.locations.length} ubicaciones entregadas, ${pending} pendientes\n`;
+      const pendingLocs = d.locations.filter((l) => l.status === 'pending');
+      for (const loc of pendingLocs) {
+        info += `  → ${loc.nombre} (${loc.direccion})\n`;
+      }
+    }
+    return info;
+  }
+
+  /**
+   * Get AI response using OpenAI with Structured Outputs
+   */
+  private async getAIResponse(messages: OpenAI.Chat.ChatCompletionMessageParam[]): Promise<AIResponse | null> {
     if (!this.openaiClient) {
       this.logger.error('OpenAI client not initialized');
       return null;
@@ -540,9 +674,17 @@ Ubicaciones entregadas: ${delivery.locations
         messages,
         max_tokens: 1000,
         temperature: 0.3,
+        response_format: {
+          type: 'json_schema',
+          json_schema: DELIVERY_RESPONSE_SCHEMA,
+        },
       });
 
-      return response.choices[0]?.message?.content || null;
+      const content = response.choices[0]?.message?.content;
+      if (!content) return null;
+
+      const parsed: AIResponse = JSON.parse(content);
+      return parsed;
     } catch (error) {
       this.logger.error(`OpenAI API error: ${error.message}`);
       return null;
@@ -550,69 +692,14 @@ Ubicaciones entregadas: ${delivery.locations
   }
 
   /**
-   * Process AI response to detect delivery confirmations and issues
-   */
-  private async processAIResponse(
-    delivery: DeliveryTracking & { locations: any[] },
-    jsonString: string,
-    instanceName: string,
-  ) {
-    // Parse JSON actions line by line — each line after ---JSON--- should be a JSON object
-    const jsonMatches: string[] = [];
-    const lines = jsonString
-      .split('\n')
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0);
-
-    for (const line of lines) {
-      // Try to parse each line as JSON
-      try {
-        const parsed = JSON.parse(line);
-        if (parsed && parsed.action) {
-          jsonMatches.push(line);
-        }
-      } catch {
-        // Not a JSON line — try regex fallback for inline JSON
-        const inlineMatches = line.match(/\{[^{}]*"action"\s*:\s*"[^"]+"[^{}]*\}/g);
-        if (inlineMatches) {
-          for (const m of inlineMatches) {
-            try {
-              const parsed = JSON.parse(m);
-              if (parsed && parsed.action) {
-                jsonMatches.push(m);
-              }
-            } catch {
-              // skip malformed
-            }
-          }
-        }
-      }
-    }
-
-    if (jsonMatches.length === 0) {
-      this.logger.warn(`No valid JSON actions found in AI response for pesada ${delivery.idPesada}: ${jsonString}`);
-      return;
-    }
-
-    this.logger.info(`Found ${jsonMatches.length} JSON action(s) for pesada ${delivery.idPesada}`);
-
-    // Process each action
-    for (const jsonMatch of jsonMatches) {
-      await this.processSingleAction(delivery, jsonMatch, instanceName);
-    }
-  }
-
-  /**
-   * Process a single action from AI response
+   * Process a single action from AI structured response
    */
   private async processSingleAction(
     delivery: DeliveryTracking & { locations: any[] },
-    jsonMatch: string,
+    action: AIResponse['actions'][0],
     instanceName: string,
   ) {
     try {
-      const action = JSON.parse(jsonMatch);
-
       // IMPORTANT: Reload delivery from DB to get current real values
       const freshDelivery = await this.prismaRepository.deliveryTracking.findUnique({
         where: { id: delivery.id },
@@ -639,11 +726,10 @@ Ubicaciones entregadas: ${delivery.locations
 
       // Handle delivery update (correction)
       if (action.action === 'update_delivery' && action.ubicacion) {
-        // Find the location by name (case insensitive, partial match) - already delivered
         const location = freshDelivery.locations.find(
           (l) =>
-            (l.nombre.toLowerCase().includes(action.ubicacion.toLowerCase()) ||
-              action.ubicacion.toLowerCase().includes(l.nombre.toLowerCase())) &&
+            (l.nombre.toLowerCase().includes(action.ubicacion!.toLowerCase()) ||
+              action.ubicacion!.toLowerCase().includes(l.nombre.toLowerCase())) &&
             l.status === 'delivered',
         );
 
@@ -651,16 +737,13 @@ Ubicaciones entregadas: ${delivery.locations
           const oldKilos = location.kilosDescargados || 0;
           let newKilos = action.kilos;
 
-          // Handle "resto" - calculate remaining
-          if (action.kilos === -1 || action.kilos === 'resto') {
-            // For update, calculate what's left considering other locations
+          if (action.kilos === -1) {
             const otrosKilos = freshDelivery.locations
               .filter((l) => l.status === 'delivered' && l.kilosDescargados && l.id !== location.id)
               .reduce((sum, l) => sum + (l.kilosDescargados || 0), 0);
             newKilos = freshDelivery.pesoNeto - otrosKilos;
           }
 
-          // Update the location
           await this.prismaRepository.deliveryLocation.update({
             where: { id: location.id },
             data: {
@@ -673,14 +756,14 @@ Ubicaciones entregadas: ${delivery.locations
             `Location ${location.nombre} updated for pesada ${freshDelivery.idPesada}: ${oldKilos} kg -> ${newKilos} kg`,
           );
 
-          // Log the correction
           await this.logMessage(
             freshDelivery.id,
             'system',
-            `Corrección en "${location.nombre}": ${oldKilos.toLocaleString('es-AR')} kg → ${newKilos.toLocaleString('es-AR')} kg`,
+            `Corrección en "${location.nombre}": ${oldKilos.toLocaleString('es-AR')} kg → ${(newKilos || 0).toLocaleString('es-AR')} kg`,
+            'action',
+            { action: 'update_delivery', ubicacion: location.nombre, oldKilos, newKilos },
           );
 
-          // Add observacion if provided
           if (action.observacion) {
             await this.addObservacion(freshDelivery.id, `${location.nombre} (corrección): ${action.observacion}`);
           }
@@ -692,29 +775,25 @@ Ubicaciones entregadas: ${delivery.locations
       if (action.action === 'confirm_delivery' && action.ubicacion) {
         let kilosToDeliver = action.kilos;
 
-        // Handle "resto" - deliver remaining kilos
-        if (action.kilos === -1 || action.kilos === 'resto') {
+        if (action.kilos === -1) {
           kilosToDeliver = kilosRestantes;
           this.logger.info(`Auto-calculating "resto": ${kilosRestantes} kg for pesada ${freshDelivery.idPesada}`);
         }
 
-        // Validate kilos
-        if (kilosToDeliver !== undefined && kilosToDeliver > kilosRestantes) {
+        if (kilosToDeliver !== null && kilosToDeliver !== undefined && kilosToDeliver > kilosRestantes) {
           this.logger.warn(
             `Kilos exceden el límite: ${kilosToDeliver} > ${kilosRestantes} restantes para pesada ${freshDelivery.idPesada}`,
           );
         }
 
-        // Find the location by name (case insensitive, partial match)
         const location = freshDelivery.locations.find(
           (l) =>
-            (l.nombre.toLowerCase().includes(action.ubicacion.toLowerCase()) ||
-              action.ubicacion.toLowerCase().includes(l.nombre.toLowerCase())) &&
+            (l.nombre.toLowerCase().includes(action.ubicacion!.toLowerCase()) ||
+              action.ubicacion!.toLowerCase().includes(l.nombre.toLowerCase())) &&
             l.status === 'pending',
         );
 
         if (location) {
-          // Mark location as delivered with kilos
           await this.prismaRepository.deliveryLocation.update({
             where: { id: location.id },
             data: {
@@ -729,25 +808,24 @@ Ubicaciones entregadas: ${delivery.locations
             `Location ${location.nombre} marked as delivered for pesada ${freshDelivery.idPesada} with ${kilosToDeliver || '?'} kg`,
           );
 
-          // Log the confirmation
           const kilosText = kilosToDeliver ? ` (${kilosToDeliver.toLocaleString('es-AR')} kg)` : '';
           await this.logMessage(
             freshDelivery.id,
             'system',
             `Ubicación "${location.nombre}" marcada como entregada${kilosText}.`,
+            'action',
+            { action: 'confirm_delivery', ubicacion: location.nombre, kilos: kilosToDeliver },
           );
 
-          // Add observacion if provided
           if (action.observacion) {
             await this.addObservacion(freshDelivery.id, `${location.nombre}: ${action.observacion}`);
           }
 
-          // Check if all locations are delivered
           await this.checkDeliveryComplete(freshDelivery.id, instanceName);
         }
       }
     } catch (error) {
-      this.logger.error(`Error parsing AI action: ${error.message}`);
+      this.logger.error(`Error processing action: ${error.message}`);
     }
   }
 
@@ -830,6 +908,8 @@ Ubicaciones entregadas: ${delivery.locations
             status: loc.status,
             deliveredAt: loc.deliveredAt,
             orden: loc.orden,
+            latitude: loc.latitude,
+            longitude: loc.longitude,
           })),
         };
 
@@ -1006,6 +1086,8 @@ Ubicaciones entregadas: ${delivery.locations
           kilosDescargados: l.kilosDescargados,
           notes: l.notes,
           deliveredAt: l.deliveredAt,
+          latitude: l.latitude,
+          longitude: l.longitude,
         })),
         createdAt: delivery.createdAt,
         updatedAt: delivery.updatedAt,
@@ -1163,10 +1245,14 @@ Ubicaciones entregadas: ${delivery.locations
         direccion: l.direccion,
         status: l.status,
         deliveredAt: l.deliveredAt,
+        latitude: l.latitude,
+        longitude: l.longitude,
       })),
       conversation: delivery.messages.map((m) => ({
         role: m.role,
         content: m.content,
+        messageType: m.messageType,
+        actionData: m.actionData,
         timestamp: m.timestamp,
       })),
     };
