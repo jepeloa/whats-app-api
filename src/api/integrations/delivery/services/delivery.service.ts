@@ -685,7 +685,13 @@ IMPORTANTE:
           'pending_gps',
           locationData,
         );
-        const infoMsg = '📍 Recibí tu ubicación. ¿Cuántos kilos descargaste en este punto?';
+        let infoMsg: string;
+        if (pendingLocations.length === 1) {
+          infoMsg = `📍 Recibí tu ubicación. ¿Cuántos kilos descargaste en *${pendingLocations[0].nombre}*?`;
+        } else {
+          const locationList = pendingLocations.map((l: any, i: number) => `${i + 1}. ${l.nombre}`).join('\n');
+          infoMsg = `📍 Recibí tu ubicación. ¿A cuál de estos puntos corresponde y cuántos kilos descargaste?\n\n${locationList}`;
+        }
         await this.sendWhatsAppMessage(instanceName, delivery.remoteJid, infoMsg);
         await this.logMessage(delivery.id, 'assistant', infoMsg);
         this.logger.info(
