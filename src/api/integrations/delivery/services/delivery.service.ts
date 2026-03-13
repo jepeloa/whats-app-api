@@ -534,6 +534,15 @@ IMPORTANTE:
       take: 20,
     });
 
+    // Check for pending GPS (sent before delivery confirmation)
+    const pendingGpsMsg = await this.prismaRepository.deliveryMessage.findFirst({
+      where: {
+        deliveryTrackingId: delivery.id,
+        messageType: 'pending_gps',
+      },
+      orderBy: { timestamp: 'desc' },
+    });
+
     // Build messages for OpenAI
     const openaiMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [
       { role: 'system', content: this.buildSystemPrompt(delivery) },
@@ -544,6 +553,15 @@ IMPORTANTE:
           content: m.content,
         })),
     ];
+
+    // If there's a pending GPS, tell the AI not to request location
+    if (pendingGpsMsg) {
+      openaiMessages.push({
+        role: 'system',
+        content:
+          'IMPORTANTE: El camionero ya envió su ubicación GPS. NO uses request_location para esta entrega. Solo confirmá los kilos con confirm_delivery.',
+      });
+    }
 
     // Get AI response with structured outputs
     const aiResponse = await this.getAIResponse(openaiMessages);
@@ -656,10 +674,28 @@ IMPORTANTE:
         }
       }
     } else {
-      // All locations already have GPS, or none delivered yet
-      const infoMsg = '📍 Recibí tu ubicación. ¡Gracias!';
-      await this.sendWhatsAppMessage(instanceName, delivery.remoteJid, infoMsg);
-      await this.logMessage(delivery.id, 'assistant', infoMsg, 'location', locationData);
+      // No delivered location awaiting GPS — check if there are pending locations (GPS arrived before confirmation)
+      const pendingLocations = delivery.locations.filter((l: any) => l.status === 'pending');
+      if (pendingLocations.length > 0) {
+        // Save as pending GPS for auto-assignment when driver confirms kilos
+        await this.logMessage(
+          delivery.id,
+          'system',
+          `GPS recibido antes de confirmar entrega: ${locationData.latitude}, ${locationData.longitude}`,
+          'pending_gps',
+          locationData,
+        );
+        const infoMsg = '📍 Recibí tu ubicación. ¿Cuántos kilos descargaste en este punto?';
+        await this.sendWhatsAppMessage(instanceName, delivery.remoteJid, infoMsg);
+        await this.logMessage(delivery.id, 'assistant', infoMsg);
+        this.logger.info(
+          `Pending GPS saved for delivery ${delivery.idPesada}: ${locationData.latitude}, ${locationData.longitude}`,
+        );
+      } else {
+        const infoMsg = '📍 Recibí tu ubicación. ¡Gracias!';
+        await this.sendWhatsAppMessage(instanceName, delivery.remoteJid, infoMsg);
+        await this.logMessage(delivery.id, 'assistant', infoMsg, 'location', locationData);
+      }
     }
   }
 
@@ -898,6 +934,42 @@ Respondé siempre en español, breve y amigable.`;
 
           if (action.observacion) {
             await this.addObservacion(freshDelivery.id, `${location.nombre}: ${action.observacion}`);
+          }
+
+          // Auto-assign pending GPS if driver sent location before confirming
+          const pendingGps = await this.prismaRepository.deliveryMessage.findFirst({
+            where: {
+              deliveryTrackingId: freshDelivery.id,
+              messageType: 'pending_gps',
+            },
+            orderBy: { timestamp: 'desc' },
+          });
+
+          if (pendingGps && pendingGps.actionData) {
+            const gpsData = pendingGps.actionData as any;
+            await this.prismaRepository.deliveryLocation.update({
+              where: { id: location.id },
+              data: {
+                latitude: gpsData.latitude,
+                longitude: gpsData.longitude,
+                gpsTimestamp: new Date(),
+              },
+            });
+
+            // Remove pending GPS so it's not reused
+            await this.prismaRepository.deliveryMessage.delete({
+              where: { id: pendingGps.id },
+            });
+
+            await this.logMessage(
+              freshDelivery.id,
+              'system',
+              `GPS auto-asignado a "${location.nombre}": ${gpsData.latitude}, ${gpsData.longitude}`,
+              'location',
+              gpsData,
+            );
+
+            this.logger.info(`Pending GPS auto-assigned to ${location.nombre} for pesada ${freshDelivery.idPesada}`);
           }
 
           await this.checkDeliveryComplete(freshDelivery.id, instanceName);
