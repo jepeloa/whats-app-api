@@ -184,7 +184,7 @@ REGLAS CRÍTICAS:
 5. Si el camionero NO pudo descargar NADA en una ubicación (cerrada, no estaba el dueño, etc.), usá "confirm_delivery" con kilos:0 y la observación. Ejemplo: "estaba cerrado" → confirm_delivery con kilos:0, observacion:"Local cerrado".
 6. Si dice "el resto", "lo que queda", "todo", usa kilos: -1 (el sistema calcula ${kilosRestantes.toLocaleString('es-AR')} kg).
 7. Valida que los kilos no excedan ${kilosRestantes.toLocaleString('es-AR')} kg restantes.
-8. Después de confirm_delivery con kilos > 0, SIEMPRE agrega request_location. En el mensaje pedí la ubicación GPS del celular: "📍 ¿Podés compartirme la ubicación de tu celular?". IMPORTANTE: el sistema bloquea al camionero hasta que envíe la ubicación.
+8. Después de confirm_delivery con kilos > 0, SIEMPRE agrega request_location. En el mensaje pedí la ubicación GPS del celular: "📍 ¿Podés compartirme la ubicación de tu celular?". Si el camionero no la envía y sigue con otra cosa, no insistas, seguí con la pesada.
 9. Si el camionero confirma varias ubicaciones en un mensaje, genera un action por cada una, cada uno seguido de request_location.
 10. Si dice "toneladas", multiplicá por 1000.
 11. Detecta "me equivoqué", "en realidad eran", "corrijo" → "update_delivery".
@@ -234,7 +234,7 @@ Camionero: "5000"
 IMPORTANTE:
 - TODA descarga (con o sin problema) se registra con confirm_delivery.
 - report_issue es SOLO para problemas generales sin ubicación.
-- SIEMPRE pedí ubicación GPS del celular después de confirmar kilos > 0. El sistema bloquea al camionero hasta que envíe la ubicación.
+- SIEMPRE pedí ubicación GPS del celular después de confirmar kilos > 0, pero si el camionero no la envía, seguí con la pesada sin insistir.
 - Para correcciones de ubicaciones YA ENTREGADAS usá "update_delivery".`;
   }
 
@@ -486,23 +486,6 @@ IMPORTANTE:
     // Extract message content
     const content = getConversationMessage(messageRaw);
     if (!content) {
-      return;
-    }
-
-    // GPS BLOCKING: If there are delivered locations waiting for GPS, block text messages
-    const locationsAwaitingGps = delivery.locations.filter(
-      (l) => l.status === 'delivered' && l.latitude == null && l.kilosDescargados && l.kilosDescargados > 0,
-    );
-
-    if (locationsAwaitingGps.length > 0) {
-      const locationNames = locationsAwaitingGps.map((l) => l.nombre).join(', ');
-      const reminderMsg =
-        `📍 Necesito que me compartas la *ubicación de tu celular* para: ${locationNames}.\n\n` +
-        `Usá la función de ubicación de WhatsApp (clip 📎 → Ubicación → Tu ubicación actual).\n\n` +
-        `Hasta que no la envíes no puedo seguir con la pesada.`;
-      await this.sendWhatsAppMessage(instanceName, remoteJid, reminderMsg);
-      await this.logMessage(delivery.id, 'assistant', reminderMsg);
-      this.logger.info(`GPS blocking: waiting for GPS from ${remoteJid} for locations: ${locationNames}`);
       return;
     }
 
