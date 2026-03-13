@@ -1006,21 +1006,19 @@ Respondé siempre en español, breve y amigable.`;
     const pendingLocations = delivery.locations.filter((l) => l.status === 'pending');
 
     if (pendingLocations.length === 0) {
-      // All locations delivered — check if we're still waiting for GPS on any location
+      // All locations delivered — log if any are missing GPS but proceed to complete
       const locationsWithoutGps = delivery.locations.filter(
         (l) => l.status === 'delivered' && l.latitude == null && l.kilosDescargados && l.kilosDescargados > 0,
       );
 
       if (locationsWithoutGps.length > 0) {
-        // Don't complete yet — wait for GPS. The AI message already asked for GPS,
-        // so we just silently wait without sending another message.
+        const names = locationsWithoutGps.map((l) => l.nombre).join(', ');
         this.logger.info(
-          `Delivery ${delivery.idPesada}: all locations delivered but ${locationsWithoutGps.length} missing GPS. Waiting.`,
+          `Delivery ${delivery.idPesada}: completing with ${locationsWithoutGps.length} locations missing GPS (${names}).`,
         );
-        return;
       }
 
-      // All locations delivered and GPS collected (or not applicable) - mark as completed
+      // All locations delivered - mark as completed
       const confirmedAt = new Date();
       await this.prismaRepository.deliveryTracking.update({
         where: { id: deliveryId },
