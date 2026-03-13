@@ -1,9 +1,9 @@
 import * as fs from 'fs';
-import * as http from 'http';
 import * as https from 'https';
 import * as os from 'os';
 import * as path from 'path';
 import PDFDocument from 'pdfkit';
+import sharp from 'sharp';
 
 import { Logger } from '../../../../config/logger.config';
 
@@ -357,7 +357,7 @@ export class DeliveryPdfService {
 
   /**
    * Download a static map image for locations with GPS coordinates
-   * Uses OpenStreetMap static map service (free, no API key)
+   * Fetches OSM tiles from tile.openstreetmap.org, composites with sharp, and draws markers
    */
   private async downloadMapImage(locations: DeliveryPdfData['locations']): Promise<string | null> {
     const gpsLocations = locations.filter((l) => l.latitude && l.longitude && l.status === 'delivered');
@@ -366,13 +366,16 @@ export class DeliveryPdfService {
       return null;
     }
 
-    // Calculate center and zoom from coordinates
+    const WIDTH = 800;
+    const HEIGHT = 400;
+    const TILE_SIZE = 256;
+
+    // Calculate bounds and zoom
     const lats = gpsLocations.map((l) => l.latitude!);
     const lngs = gpsLocations.map((l) => l.longitude!);
     const centerLat = (Math.min(...lats) + Math.max(...lats)) / 2;
     const centerLng = (Math.min(...lngs) + Math.max(...lngs)) / 2;
 
-    // Estimate zoom level based on coordinate spread
     const latSpread = Math.max(...lats) - Math.min(...lats);
     const lngSpread = Math.max(...lngs) - Math.min(...lngs);
     const maxSpread = Math.max(latSpread, lngSpread);
@@ -386,68 +389,123 @@ export class DeliveryPdfService {
     else if (maxSpread > 0.05) zoom = 12;
     else zoom = 13;
 
-    // Use staticmap.openstreetmap.de (free OSM static maps)
-    const markerParams = gpsLocations
-      .sort((a, b) => a.orden - b.orden)
-      .map((loc) => `markers=${loc.latitude},${loc.longitude},ol-marker`)
-      .join('&');
+    try {
+      // Convert lat/lng to pixel coordinates
+      const centerPx = this.latLngToPixel(centerLat, centerLng, zoom);
 
-    const url = `https://staticmap.openstreetmap.de/staticmap.php?center=${centerLat},${centerLng}&zoom=${zoom}&size=800x400&maptype=mapnik&${markerParams}`;
+      // Calculate tile range needed
+      const topLeftPx = { x: centerPx.x - WIDTH / 2, y: centerPx.y - HEIGHT / 2 };
+      const tileMinX = Math.floor(topLeftPx.x / TILE_SIZE);
+      const tileMinY = Math.floor(topLeftPx.y / TILE_SIZE);
+      const tileMaxX = Math.floor((topLeftPx.x + WIDTH) / TILE_SIZE);
+      const tileMaxY = Math.floor((topLeftPx.y + HEIGHT) / TILE_SIZE);
 
-    const mapPath = path.join(os.tmpdir(), `map_${Date.now()}.png`);
+      // Download tiles
+      const tileBuffers: Array<{ buffer: Buffer; x: number; y: number }> = [];
+      for (let tx = tileMinX; tx <= tileMaxX; tx++) {
+        for (let ty = tileMinY; ty <= tileMaxY; ty++) {
+          const buffer = await this.downloadTile(tx, ty, zoom);
+          if (buffer) {
+            tileBuffers.push({
+              buffer,
+              x: tx * TILE_SIZE - Math.round(topLeftPx.x),
+              y: ty * TILE_SIZE - Math.round(topLeftPx.y),
+            });
+          }
+        }
+      }
+
+      if (tileBuffers.length === 0) {
+        return null;
+      }
+
+      // Composite tiles onto a blank canvas
+      const compositeInputs = tileBuffers.map((t) => ({
+        input: t.buffer,
+        left: t.x,
+        top: t.y,
+      }));
+
+      // Create marker circles (red dots) for each GPS location
+      const markerInputs = gpsLocations
+        .sort((a, b) => a.orden - b.orden)
+        .map((loc) => {
+          const px = this.latLngToPixel(loc.latitude!, loc.longitude!, zoom);
+          const markerX = Math.round(px.x - topLeftPx.x) - 8;
+          const markerY = Math.round(px.y - topLeftPx.y) - 8;
+          // Red circle marker SVG
+          const svg = Buffer.from(
+            `<svg width="16" height="16"><circle cx="8" cy="8" r="7" fill="red" stroke="white" stroke-width="2"/></svg>`,
+          );
+          return {
+            input: svg,
+            left: Math.max(0, Math.min(markerX, WIDTH - 16)),
+            top: Math.max(0, Math.min(markerY, HEIGHT - 16)),
+          };
+        });
+
+      const mapPath = path.join(os.tmpdir(), `map_${Date.now()}.png`);
+
+      await sharp({
+        create: {
+          width: WIDTH,
+          height: HEIGHT,
+          channels: 3,
+          background: { r: 220, g: 220, b: 220 },
+        },
+      })
+        .composite([...compositeInputs, ...markerInputs])
+        .png()
+        .toFile(mapPath);
+
+      this.logger.info(`Map image generated with ${tileBuffers.length} tiles and ${markerInputs.length} markers`);
+      return mapPath;
+    } catch (err) {
+      this.logger.warn(`Map generation error: ${err.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Convert lat/lng to global pixel coordinates at a given zoom level
+   */
+  private latLngToPixel(lat: number, lng: number, zoom: number): { x: number; y: number } {
+    const n = Math.pow(2, zoom);
+    const x = ((lng + 180) / 360) * n * 256;
+    const latRad = (lat * Math.PI) / 180;
+    const y = ((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2) * n * 256;
+    return { x, y };
+  }
+
+  /**
+   * Download a single OSM tile
+   */
+  private downloadTile(x: number, y: number, zoom: number): Promise<Buffer | null> {
+    // Use OSM tile server with proper User-Agent as required by OSM tile usage policy
+    const url = `https://tile.openstreetmap.org/${zoom}/${x}/${y}.png`;
 
     return new Promise((resolve) => {
-      const request = https.get(url, { timeout: 10000 }, (response) => {
-        // Handle redirects
-        if (
-          response.statusCode &&
-          response.statusCode >= 300 &&
-          response.statusCode < 400 &&
-          response.headers.location
-        ) {
-          const redirectUrl = response.headers.location;
-          const protocol = redirectUrl.startsWith('https') ? https : http;
-          protocol
-            .get(redirectUrl, { timeout: 10000 }, (redirectRes) => {
-              if (redirectRes.statusCode !== 200) {
-                this.logger.warn(`Map redirect failed with status ${redirectRes.statusCode}`);
-                resolve(null);
-                return;
-              }
-              const file = fs.createWriteStream(mapPath);
-              redirectRes.pipe(file);
-              file.on('finish', () => {
-                file.close();
-                resolve(mapPath);
-              });
-              file.on('error', () => resolve(null));
-            })
-            .on('error', () => resolve(null));
-          return;
-        }
-
-        if (response.statusCode !== 200) {
-          this.logger.warn(`Map download failed with status ${response.statusCode}`);
-          resolve(null);
-          return;
-        }
-
-        const file = fs.createWriteStream(mapPath);
-        response.pipe(file);
-        file.on('finish', () => {
-          file.close();
-          resolve(mapPath);
-        });
-        file.on('error', () => resolve(null));
-      });
-
-      request.on('error', (err) => {
-        this.logger.warn(`Map download error: ${err.message}`);
-        resolve(null);
-      });
-
-      request.on('timeout', () => {
-        request.destroy();
+      const req = https.get(
+        url,
+        {
+          headers: { 'User-Agent': 'EvolutionAPI-DeliveryTracker/1.0 (delivery@lasibila.com)' },
+          timeout: 8000,
+        },
+        (res) => {
+          if (res.statusCode !== 200) {
+            res.resume();
+            resolve(null);
+            return;
+          }
+          const chunks: Buffer[] = [];
+          res.on('data', (chunk) => chunks.push(chunk));
+          res.on('end', () => resolve(Buffer.concat(chunks)));
+          res.on('error', () => resolve(null));
+        },
+      );
+      req.on('error', () => resolve(null));
+      req.on('timeout', () => {
+        req.destroy();
         resolve(null);
       });
     });

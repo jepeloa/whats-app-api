@@ -185,7 +185,7 @@ INSTRUCCIONES PARA ENTREGAS:
 5. Para CORRECCIONES de kilos ya entregados, usa "update_delivery".
 6. Si dice "el resto", "lo que queda", "todo lo demás", usa kilos: -1 (el sistema calcula ${kilosRestantes.toLocaleString('es-AR')} kg).
 7. Valida que los kilos no excedan ${kilosRestantes.toLocaleString('es-AR')} kg restantes.
-8. Después de confirmar una entrega con kilos, SIEMPRE agrega una action "request_location" para pedir la ubicación GPS.
+8. Después de confirmar una entrega con kilos, SIEMPRE agrega una action "request_location" para pedir la ubicación GPS. Incluí en el mensaje: "📍 Tocá el clip 📎 → Ubicación → Tu ubicación actual".
 9. Si el camionero confirma varias ubicaciones en un mensaje, genera un action por cada una.
 10. Si dice "toneladas", multiplicá por 1000 para obtener kilos.
 11. Detecta frases como "me equivoqué", "en realidad eran", "no, eran", "corrijo" como señales de corrección → usa "update_delivery".
@@ -211,11 +211,11 @@ Camionero: "Entregué en Aceitera"
 → actions: [] (no confirmar sin kilos)
 
 Camionero: "Entregué 15000 kilos en Aceitera"
-→ message: "¡Perfecto ${firstName}! Confirmados 15.000 kg en Aceitera. 📍 ¿Podés compartirme tu ubicación? (clip 📎 → Ubicación)"
+→ message: "¡Perfecto ${firstName}! Confirmados 15.000 kg en Aceitera. 📍 Tocá el clip 📎 → Ubicación → *Tu ubicación actual* y enviala."
 → actions: [{"action":"confirm_delivery","ubicacion":"Aceitera General Deheza","kilos":15000,"observacion":null}, {"action":"request_location","ubicacion":"Aceitera General Deheza","kilos":null,"observacion":null}]
 
 Camionero: "Descargué el resto en la terminal"
-→ message: "¡Perfecto ${firstName}! Confirmados los ${kilosRestantes.toLocaleString('es-AR')} kg restantes. 📍 Compartime tu ubicación."
+→ message: "¡Perfecto ${firstName}! Confirmados los ${kilosRestantes.toLocaleString('es-AR')} kg restantes. 📍 Tocá el clip 📎 → Ubicación → Tu ubicación actual."
 → actions: [{"action":"confirm_delivery","ubicacion":"Terminal Puerto Rosario","kilos":-1,"observacion":null}, {"action":"request_location","ubicacion":"Terminal Puerto Rosario","kilos":null,"observacion":null}]
 
 Camionero: "Tuve un accidente"
@@ -631,6 +631,10 @@ IMPORTANTE:
       this.logger.info(
         `GPS saved for location ${locationWithoutGps.nombre}: ${locationData.latitude}, ${locationData.longitude}`,
       );
+
+      // After saving GPS, re-check if all locations are now complete
+      // (this handles the case where we were waiting for GPS before closing)
+      await this.checkDeliveryComplete(delivery.id, instanceName);
     } else {
       // All locations already have GPS, or none delivered yet
       const infoMsg = '📍 Recibí tu ubicación. ¡Gracias!';
@@ -915,7 +919,26 @@ IMPORTANTE:
     const pendingLocations = delivery.locations.filter((l) => l.status === 'pending');
 
     if (pendingLocations.length === 0) {
-      // All locations delivered - mark as completed
+      // All locations delivered — check if we're still waiting for GPS on any location
+      const locationsWithoutGps = delivery.locations.filter(
+        (l) => l.status === 'delivered' && l.latitude == null && l.kilosDescargados && l.kilosDescargados > 0,
+      );
+
+      if (locationsWithoutGps.length > 0) {
+        // Don't complete yet — wait for GPS from the last delivery
+        this.logger.info(
+          `Delivery ${delivery.idPesada}: all locations delivered but ${locationsWithoutGps.length} missing GPS. Waiting for GPS before completing.`,
+        );
+
+        // Ask for GPS for the locations missing it
+        const locationNames = locationsWithoutGps.map((l) => l.nombre).join(', ');
+        const gpsRequestMsg = `📍 Antes de cerrar el reporte, necesito tu ubicación de: ${locationNames}.\n\n👉 Tocá el clip 📎 → Ubicación → *Tu ubicación actual* y enviala.`;
+        await this.sendWhatsAppMessage(instanceName, delivery.remoteJid, gpsRequestMsg);
+        await this.logMessage(deliveryId, 'assistant', gpsRequestMsg);
+        return;
+      }
+
+      // All locations delivered and GPS collected (or not applicable) - mark as completed
       const confirmedAt = new Date();
       await this.prismaRepository.deliveryTracking.update({
         where: { id: deliveryId },
