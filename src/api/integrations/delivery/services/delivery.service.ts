@@ -163,15 +163,6 @@ ${data.ubicaciones.length > 1 ? `Ubicaciones de descarga:\n${ubicacionesList}` :
         ? `\nUBICACIONES SIN GPS: ${deliveredWithoutGps.join(', ')}. Después de confirmar entrega, pedí la ubicación GPS al camionero.`
         : '';
 
-    // Detect if all locations are delivered (waiting for GPS or done)
-    const allDelivered = delivery.locations.every((l) => l.status === 'delivered');
-    const waitingGpsNote =
-      allDelivered && deliveredWithoutGps.length > 0
-        ? `\nESTADO: Todas las ubicaciones fueron entregadas. Estás esperando la ubicación GPS del camionero. Si el camionero no quiere compartir GPS o dice cualquier otra cosa que no sea ubicación, respondé brevemente que cerrás sin GPS. El sistema se encarga de cerrar.`
-        : allDelivered
-          ? `\nESTADO: Todas las ubicaciones fueron entregadas y tienen GPS. La pesada se va a cerrar automáticamente.`
-          : '';
-
     return `Eres un asistente de logística para el camionero ${firstName}. Tu trabajo principal es gestionar la pesada #${delivery.idPesada}, pero también podés responder preguntas generales.
 
 PESO TOTAL A ENTREGAR: ${delivery.pesoNeto.toLocaleString('es-AR')} ${delivery.pesoUn}
@@ -183,17 +174,17 @@ ${pendingLocations || 'Ninguna'}
 
 UBICACIONES ENTREGADAS:
 ${deliveredLocations || 'Ninguna'}
-${gpsNote}${waitingGpsNote}
+${gpsNote}
 
 REGLAS CRÍTICAS:
 1. Respondé MUY BREVE (máximo 2 oraciones).
-2. FLUJO OBLIGATORIO para cada ubicación: primero confirmar kilos descargados con "confirm_delivery", luego SIEMPRE pedir GPS con "request_location". NO hay excepciones.
+2. FLUJO OBLIGATORIO para cada ubicación: primero confirmar kilos descargados con "confirm_delivery", luego SIEMPRE agregar "request_location" como segunda acción. SIN EXCEPCIONES. Esto aplica incluso para la última ubicación.
 3. Si el camionero menciona kilos Y un problema (pérdida, accidente, rotura, etc.), usá "confirm_delivery" con los kilos que SÍ descargó + la observación del problema. Ejemplo: "perdí la mitad, descargue 500" → confirm_delivery con kilos:500 y observacion:"Pérdida parcial de carga".
 4. Solo usá "report_issue" SIN ubicación cuando el problema es GENERAL (no asociado a una ubicación específica). Ejemplo: "tuve un accidente en la ruta".
 5. Si el camionero NO pudo descargar NADA en una ubicación (cerrada, no estaba el dueño, etc.), usá "confirm_delivery" con kilos:0 y la observación. Ejemplo: "estaba cerrado" → confirm_delivery con kilos:0, observacion:"Local cerrado".
 6. Si dice "el resto", "lo que queda", "todo", usa kilos: -1 (el sistema calcula ${kilosRestantes.toLocaleString('es-AR')} kg).
 7. Valida que los kilos no excedan ${kilosRestantes.toLocaleString('es-AR')} kg restantes.
-8. Después de confirm_delivery con kilos > 0, SIEMPRE agrega request_location. En el mensaje pedí la ubicación GPS del celular: "📍 ¿Podés compartirme la ubicación de tu celular?". Si el camionero no la envía y sigue con otra cosa, no insistas, seguí con la pesada.
+8. Después de CADA confirm_delivery, SIEMPRE agrega request_location como acción siguiente. En el mensaje pedí la ubicación GPS del celular: "📍 ¿Podés compartirme la ubicación de tu celular?". Es OPCIONAL: si el camionero no la envía y sigue con otra cosa, no insistas, seguí con la pesada. Pero SIEMPRE pedí.
 9. Si el camionero confirma varias ubicaciones en un mensaje, genera un action por cada una, cada uno seguido de request_location.
 10. Si dice "toneladas", multiplicá por 1000.
 11. Detecta "me equivoqué", "en realidad eran", "corrijo" → "update_delivery".
@@ -243,7 +234,7 @@ Camionero: "5000"
 IMPORTANTE:
 - TODA descarga (con o sin problema) se registra con confirm_delivery.
 - report_issue es SOLO para problemas generales sin ubicación.
-- SIEMPRE pedí ubicación GPS del celular después de confirmar kilos > 0, pero si el camionero no la envía, seguí con la pesada sin insistir.
+- SIEMPRE pedí ubicación GPS del celular después de confirm_delivery (con cualquier cantidad de kilos). Es OPCIONAL: si el camionero no la comparte, seguí sin insistir. El sistema se cierra automáticamente cuando todas las ubicaciones están entregadas.
 - Para correcciones de ubicaciones YA ENTREGADAS usá "update_delivery".`;
   }
 
@@ -536,22 +527,6 @@ IMPORTANTE:
     }
 
     this.logger.info(`Processing message from ${remoteJid} for pesada ${delivery.idPesada}: ${content}`);
-
-    // Check if all locations are delivered but waiting for GPS
-    // If driver sends any text ("no", continues chatting, etc.) → complete without GPS
-    const pendingLocs = delivery.locations.filter((l) => l.status === 'pending');
-    const awaitingGps = delivery.locations.filter(
-      (l) => l.status === 'delivered' && l.latitude == null && l.kilosDescargados && l.kilosDescargados > 0,
-    );
-
-    if (pendingLocs.length === 0 && awaitingGps.length > 0) {
-      this.logger.info(`Driver declined GPS for ${delivery.idPesada}, completing delivery.`);
-      const ackMsg = 'Entendido, cierro la pesada sin ubicación GPS.';
-      await this.sendWhatsAppMessage(instanceName, remoteJid, ackMsg);
-      await this.logMessage(delivery.id, 'assistant', ackMsg);
-      await this.checkDeliveryComplete(delivery.id, instanceName, true);
-      return;
-    }
 
     // Update status to in_progress if still pending
     if (delivery.status === 'pending') {
@@ -1058,7 +1033,7 @@ Respondé siempre en español, breve y amigable.`;
   /**
    * Check if all locations are delivered and update delivery status
    */
-  private async checkDeliveryComplete(deliveryId: string, instanceName: string, forceComplete = false) {
+  private async checkDeliveryComplete(deliveryId: string, instanceName: string) {
     const delivery = await this.prismaRepository.deliveryTracking.findUnique({
       where: { id: deliveryId },
       include: { locations: { orderBy: { orden: 'asc' } }, messages: true },
@@ -1069,19 +1044,6 @@ Respondé siempre en español, breve y amigable.`;
     const pendingLocations = delivery.locations.filter((l) => l.status === 'pending');
 
     if (pendingLocations.length === 0) {
-      // All locations delivered — check if we're still waiting for GPS
-      const locationsWithoutGps = delivery.locations.filter(
-        (l) => l.status === 'delivered' && l.latitude == null && l.kilosDescargados && l.kilosDescargados > 0,
-      );
-
-      if (locationsWithoutGps.length > 0 && !forceComplete) {
-        // Wait for driver to send GPS or decline — don't auto-complete
-        this.logger.info(
-          `Delivery ${delivery.idPesada}: all delivered but ${locationsWithoutGps.length} missing GPS. Waiting for response.`,
-        );
-        return;
-      }
-
       // All locations delivered and GPS collected (or not required) - mark as completed
       const confirmedAt = new Date();
       await this.prismaRepository.deliveryTracking.update({
