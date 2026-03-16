@@ -163,6 +163,15 @@ ${data.ubicaciones.length > 1 ? `Ubicaciones de descarga:\n${ubicacionesList}` :
         ? `\nUBICACIONES SIN GPS: ${deliveredWithoutGps.join(', ')}. Después de confirmar entrega, pedí la ubicación GPS al camionero.`
         : '';
 
+    // Detect if all locations are delivered (waiting for GPS or done)
+    const allDelivered = delivery.locations.every((l) => l.status === 'delivered');
+    const waitingGpsNote =
+      allDelivered && deliveredWithoutGps.length > 0
+        ? `\nESTADO: Todas las ubicaciones fueron entregadas. Estás esperando la ubicación GPS del camionero. Si el camionero no quiere compartir GPS o dice cualquier otra cosa que no sea ubicación, respondé brevemente que cerrás sin GPS. El sistema se encarga de cerrar.`
+        : allDelivered
+          ? `\nESTADO: Todas las ubicaciones fueron entregadas y tienen GPS. La pesada se va a cerrar automáticamente.`
+          : '';
+
     return `Eres un asistente de logística para el camionero ${firstName}. Tu trabajo principal es gestionar la pesada #${delivery.idPesada}, pero también podés responder preguntas generales.
 
 PESO TOTAL A ENTREGAR: ${delivery.pesoNeto.toLocaleString('es-AR')} ${delivery.pesoUn}
@@ -174,7 +183,7 @@ ${pendingLocations || 'Ninguna'}
 
 UBICACIONES ENTREGADAS:
 ${deliveredLocations || 'Ninguna'}
-${gpsNote}
+${gpsNote}${waitingGpsNote}
 
 REGLAS CRÍTICAS:
 1. Respondé MUY BREVE (máximo 2 oraciones).
@@ -772,7 +781,7 @@ Respondé siempre en español, breve y amigable.`;
 
     try {
       const response = await this.openaiClient.chat.completions.create({
-        model: 'gpt-4o',
+        model: 'gpt-4.1',
         messages,
         max_tokens: 500,
         temperature: 0.7,
@@ -828,7 +837,7 @@ Respondé siempre en español, breve y amigable.`;
 
     try {
       const response = await this.openaiClient.chat.completions.create({
-        model: 'gpt-4o',
+        model: 'gpt-4.1',
         messages,
         max_tokens: 1000,
         temperature: 0.3,
