@@ -3,7 +3,7 @@
 # Script para listar todas las instancias de WhatsApp
 
 API_URL="http://localhost:8081"
-API_KEY="429683C4C977415CAAFCCE10F7D57E11"
+API_KEY="${EVOLUTION_API_KEY:-CHANGE_ME}"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'

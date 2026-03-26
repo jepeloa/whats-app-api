@@ -10,7 +10,7 @@
 # =============================================================================
 
 API_URL="http://167.71.214.252:8081"
-API_KEY="429683C4C977415CAAFCCE10F7D57E11"
+API_KEY="${EVOLUTION_API_KEY:-CHANGE_ME}"
 INSTANCE="javier"
 
 curl -s -X POST "${API_URL}/delivery/create/${INSTANCE}" \
