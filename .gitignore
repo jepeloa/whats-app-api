@@ -47,3 +47,4 @@ lerna-debug.log*
 
 /prisma/migrations/*
 docker-compose.portainer.yaml
+.env.portainer
