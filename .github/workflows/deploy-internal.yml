@@ -43,7 +43,12 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Notificar a Portainer (redeploy)
-        if: ${{ secrets.PORTAINER_WEBHOOK_URL != '' }}
         continue-on-error: true
         run: |
-          curl -X POST "${{ secrets.PORTAINER_WEBHOOK_URL }}"
+          if [ -n "$WEBHOOK_URL" ]; then
+            curl -X POST "$WEBHOOK_URL"
+          else
+            echo "PORTAINER_WEBHOOK_URL not configured, skipping"
+          fi
+        env:
+          WEBHOOK_URL: ${{ secrets.PORTAINER_WEBHOOK_URL }}
