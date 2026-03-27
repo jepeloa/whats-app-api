@@ -1,9 +1,11 @@
-name: Build Docker image
+name: Build Docker image (DISABLED - original Evolution API workflow)
 
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
+  # Disabled: was triggering on push to main but requires Docker Hub credentials
+  # push:
+  #   branches:
+  #     - main
 
 jobs:
   build_deploy:
