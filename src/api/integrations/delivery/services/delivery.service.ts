@@ -293,7 +293,15 @@ IMPORTANTE:
     });
 
     if (existingPesada) {
-      throw new Error(`La pesada #${data.idPesada} ya existe en esta instancia`);
+      // If closed, delete old record to allow recreation
+      if (['completed', 'partial', 'not_delivered'].includes(existingPesada.status)) {
+        this.logger.info(`Deleting closed pesada #${data.idPesada} (status: ${existingPesada.status}) to recreate`);
+        await this.prismaRepository.deliveryTracking.delete({
+          where: { id: existingPesada.id },
+        });
+      } else {
+        throw new Error(`La pesada #${data.idPesada} ya tiene un pedido activo en esta instancia. Cerrelo antes de recrearlo.`);
+      }
     }
 
     // Create delivery tracking with locations
