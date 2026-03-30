@@ -1243,6 +1243,19 @@ Respondé siempre en español, breve y amigable.`;
       // UPDATE traslado estado
       await this.pesadaQueryService.updateTrasladoEstado(traslado.tras_id, 'completado');
 
+      // Save WhatsApp conversation log
+      const chatMessages = delivery.messages
+        ? delivery.messages.map((m: any) => ({
+            role: m.role,
+            content: m.content,
+            type: m.messageType,
+            timestamp: m.timestamp,
+          }))
+        : [];
+      const choferTel = delivery.remoteJid?.replace('@s.whatsapp.net', '') || '';
+      await this.pesadaQueryService.saveWsappLog(traslado.tras_id, choferTel, chatMessages);
+      this.logger.info(`Saved wsapp_log for traslado ${traslado.tras_id}`);
+
       this.logger.info(`SIGO write-back completed for pesada ${delivery.idPesada} (traslado ${traslado.tras_id})`);
       await this.logMessage(delivery.id, 'system', `Resultados guardados en SIGO (traslado ${traslado.tras_id})`);
     } catch (error) {

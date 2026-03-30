@@ -227,6 +227,30 @@ export class PesadaQueryService {
       .query('UPDATE traslado SET tras_estado = @estado, tras_dt_cierre = @dtCierre WHERE tras_id = @trasId');
   }
 
+  /**
+   * Save the WhatsApp conversation log to wsapp_log
+   * Deletes existing rows for this traslado first (idempotent on re-creation)
+   */
+  public async saveWsappLog(trasId: number, choferTel: string, messages: any[]): Promise<void> {
+    const pool = await this.getSigoPool();
+
+    // Delete existing log to avoid duplicates on pesada re-creation
+    await pool
+      .request()
+      .input('trasId', sql.Int, trasId)
+      .query('DELETE FROM wsapp_log WHERE tras_id = @trasId');
+
+    await pool
+      .request()
+      .input('trasId', sql.Int, trasId)
+      .input('tel', sql.NVarChar(50), choferTel ? choferTel.substring(0, 50) : null)
+      .input('json', sql.NVarChar(sql.MAX), JSON.stringify(messages))
+      .query(
+        `INSERT INTO wsapp_log (tras_id, tras_chofer_tel, wsapp_json)
+         VALUES (@trasId, @tel, @json)`,
+      );
+  }
+
   // ==================== Legacy Methods ====================
 
   public async notifyPesada(instanceName: string, idPesada: number, testPhone?: string): Promise<any> {
