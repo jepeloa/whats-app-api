@@ -122,6 +122,106 @@ export class PesadaQueryService {
     return message;
   }
 
+  // ==================== SIGO Write Methods ====================
+
+  /**
+   * Find the traslado record in SIGO by external ID (IdPesada)
+   * Returns the most recent match (highest tras_id)
+   */
+  public async findTraslado(idPesada: string): Promise<{ tras_id: number; tras_ext_id: string; tras_estado: string } | null> {
+    try {
+      const pool = await this.getSigoPool();
+      const result = await pool
+        .request()
+        .input('extId', sql.NVarChar(50), idPesada)
+        .query('SELECT TOP 1 tras_id, tras_ext_id, tras_estado FROM traslado WHERE tras_ext_id = @extId ORDER BY tras_id DESC');
+
+      if (result.recordset.length === 0) return null;
+      return result.recordset[0];
+    } catch (error) {
+      this.logger.error(`Error finding traslado for pesada ${idPesada}: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Look up ub_id from ubicaciones table by name
+   */
+  public async findUbicacionIdByName(nombre: string): Promise<string | null> {
+    try {
+      const pool = await this.getSigoPool();
+      const result = await pool
+        .request()
+        .input('nombre', sql.NVarChar(250), nombre)
+        .query('SELECT TOP 1 ub_id FROM ubicaciones WHERE ub_nombre = @nombre');
+
+      if (result.recordset.length === 0) return null;
+      return result.recordset[0].ub_id;
+    } catch (error) {
+      this.logger.error(`Error finding ub_id for "${nombre}": ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Save delivery results to traslado_descarga (one row per location)
+   */
+  public async saveDescarga(
+    trasId: number,
+    extId: string,
+    locations: Array<{ nombre: string; kilosDescargados: number | null; ubId?: string | null }>,
+    pesoUn: string,
+  ): Promise<void> {
+    const pool = await this.getSigoPool();
+
+    for (const loc of locations) {
+      await pool
+        .request()
+        .input('trasId', sql.Int, trasId)
+        .input('extId', sql.NVarChar(50), extId)
+        .input('ubicId', sql.NVarChar(10), loc.ubId || null)
+        .input('ubicNombre', sql.NVarChar(250), loc.nombre)
+        .input('qty', sql.Decimal(18, 2), loc.kilosDescargados || 0)
+        .input('qtyUn', sql.Char(2), pesoUn.substring(0, 2))
+        .query(
+          `INSERT INTO traslado_descarga (tras_id, tras_ext_id, tras_desc_ubic_id, tras_desc_ubic_nombre, tras_desc_qty, tras_desc_qty_un)
+           VALUES (@trasId, @extId, @ubicId, @ubicNombre, @qty, @qtyUn)`,
+        );
+    }
+  }
+
+  /**
+   * Log an event to traslado_bitacora
+   */
+  public async saveBitacora(trasId: number, evento: string, obs?: string): Promise<void> {
+    const pool = await this.getSigoPool();
+    await pool
+      .request()
+      .input('trasId', sql.Int, trasId)
+      .input('dt', sql.DateTime, new Date())
+      .input('evento', sql.NVarChar(50), evento)
+      .input('obs', sql.NVarChar(250), obs ? obs.substring(0, 250) : null)
+      .query(
+        `INSERT INTO traslado_bitacora (tras_id, tras_bit_dt, tras_bit_evento, tras_bit_obs)
+         VALUES (@trasId, @dt, @evento, @obs)`,
+      );
+  }
+
+  /**
+   * Update traslado status and close date
+   */
+  public async updateTrasladoEstado(trasId: number, estado: string): Promise<void> {
+    const pool = await this.getSigoPool();
+    await pool
+      .request()
+      .input('trasId', sql.Int, trasId)
+      .input('estado', sql.NVarChar(50), estado)
+      .input('dtCierre', sql.DateTime, new Date())
+      .query('UPDATE traslado SET tras_estado = @estado, tras_dt_cierre = @dtCierre WHERE tras_id = @trasId');
+  }
+
+  // ==================== Legacy Methods ====================
+
   public async notifyPesada(instanceName: string, idPesada: number, testPhone?: string): Promise<any> {
     const pesada = await this.queryPesada(idPesada);
     if (!pesada) {

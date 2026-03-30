@@ -10,6 +10,7 @@ import OpenAI from 'openai';
 import { CreateDeliveryDto } from '../dto/delivery.dto';
 import { DeliveryEmailService } from './delivery-email.service';
 import { DeliveryPdfService } from './delivery-pdf.service';
+import { PesadaQueryService } from './pesada-query.service';
 
 /**
  * JSON Schema for OpenAI Structured Outputs
@@ -88,6 +89,7 @@ export class DeliveryService {
     private readonly prismaRepository: PrismaRepository,
     private readonly configService: ConfigService,
     private readonly emailService: DeliveryEmailService,
+    private readonly pesadaQueryService?: PesadaQueryService,
   ) {
     this.initOpenAI();
   }
@@ -1179,6 +1181,73 @@ Respondé siempre en español, breve y amigable.`;
 
       // Send completion email
       await this.emailService.sendDeliveryCompletedEmail(delivery, 'completed');
+
+      // Save results to SIGO database (traslado_descarga + bitacora + estado)
+      await this.saveToSigo(delivery);
+    }
+  }
+
+  /**
+   * Save delivery results to SIGO SQL Server database
+   * - INSERT rows into traslado_descarga (one per location)
+   * - INSERT event into traslado_bitacora
+   * - UPDATE traslado.tras_estado + tras_dt_cierre
+   * Non-critical: errors are logged but don't break the flow
+   */
+  private async saveToSigo(delivery: any): Promise<void> {
+    if (!this.pesadaQueryService) {
+      this.logger.warn(`PesadaQueryService not available, skipping SIGO write for pesada ${delivery.idPesada}`);
+      return;
+    }
+
+    try {
+      // Find the traslado record in SIGO by IdPesada
+      const traslado = await this.pesadaQueryService.findTraslado(delivery.idPesada);
+      if (!traslado) {
+        this.logger.warn(`Traslado not found in SIGO for pesada ${delivery.idPesada}, skipping write-back`);
+        return;
+      }
+
+      this.logger.info(`Found traslado ${traslado.tras_id} for pesada ${delivery.idPesada}, saving results to SIGO`);
+
+      // Build location data with ub_id lookup
+      const locationData: Array<{ nombre: string; kilosDescargados: number | null; ubId: string | null }> = [];
+      for (const loc of delivery.locations) {
+        const ubId = await this.pesadaQueryService.findUbicacionIdByName(loc.nombre);
+        locationData.push({
+          nombre: loc.nombre,
+          kilosDescargados: loc.kilosDescargados,
+          ubId,
+        });
+      }
+
+      // INSERT into traslado_descarga
+      await this.pesadaQueryService.saveDescarga(
+        traslado.tras_id,
+        delivery.idPesada,
+        locationData,
+        delivery.pesoUn || 'KG',
+      );
+      this.logger.info(`Saved ${locationData.length} descarga rows for traslado ${traslado.tras_id}`);
+
+      // Calculate totals for bitacora observation
+      const totalDescargado = delivery.locations
+        .filter((l: any) => l.kilosDescargados)
+        .reduce((sum: number, l: any) => sum + (l.kilosDescargados || 0), 0);
+      const ubicacionesConCarga = delivery.locations.filter((l: any) => l.kilosDescargados && l.kilosDescargados > 0).length;
+
+      // INSERT into traslado_bitacora
+      const obsText = `Cerrado via WhatsApp. ${ubicacionesConCarga} ubicacion(es), ${totalDescargado} kg descargados`;
+      await this.pesadaQueryService.saveBitacora(traslado.tras_id, 'cierre_whatsapp', obsText);
+
+      // UPDATE traslado estado
+      await this.pesadaQueryService.updateTrasladoEstado(traslado.tras_id, 'completado');
+
+      this.logger.info(`SIGO write-back completed for pesada ${delivery.idPesada} (traslado ${traslado.tras_id})`);
+      await this.logMessage(delivery.id, 'system', `Resultados guardados en SIGO (traslado ${traslado.tras_id})`);
+    } catch (error) {
+      this.logger.error(`Error saving to SIGO for pesada ${delivery.idPesada}: ${error.message}`);
+      // Don't fail the whole process if SIGO write fails
     }
   }
 

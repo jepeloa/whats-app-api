@@ -145,8 +145,8 @@ export const evoaiController = new EvoaiController(evoaiService, prismaRepositor
 
 // Delivery Tracking
 const deliveryEmailService = new DeliveryEmailService();
-const deliveryService = new DeliveryService(waMonitor, prismaRepository, configService, deliveryEmailService);
 const pesadaQueryService = new PesadaQueryService(configService, waMonitor);
+const deliveryService = new DeliveryService(waMonitor, prismaRepository, configService, deliveryEmailService, pesadaQueryService);
 export const deliveryController = new DeliveryController(deliveryService, pesadaQueryService);
 export const deliveryReminderScheduler = new DeliveryReminderSchedulerService(prismaRepository, deliveryService);
 
