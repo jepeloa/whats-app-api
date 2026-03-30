@@ -165,6 +165,7 @@ export class PesadaQueryService {
 
   /**
    * Save delivery results to traslado_descarga (one row per location)
+   * Deletes existing rows for this traslado first (idempotent on re-creation)
    */
   public async saveDescarga(
     trasId: number,
@@ -173,6 +174,12 @@ export class PesadaQueryService {
     pesoUn: string,
   ): Promise<void> {
     const pool = await this.getSigoPool();
+
+    // Delete existing rows to avoid duplicates on pesada re-creation
+    await pool
+      .request()
+      .input('trasId', sql.Int, trasId)
+      .query('DELETE FROM traslado_descarga WHERE tras_id = @trasId');
 
     for (const loc of locations) {
       await pool
