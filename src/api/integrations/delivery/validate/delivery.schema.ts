@@ -88,3 +88,18 @@ export const deliveryListSchema: JSONSchema7 = {
     offset: { type: 'integer', minimum: 0 },
   },
 };
+
+export const notifyPesadaSchema: JSONSchema7 = {
+  $id: v4(),
+  type: 'object',
+  properties: {},
+};
+
+export const notifyPesadaTestSchema: JSONSchema7 = {
+  $id: v4(),
+  type: 'object',
+  properties: {
+    testPhone: { type: 'string', minLength: 1 },
+  },
+  required: ['testPhone'],
+};

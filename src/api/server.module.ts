@@ -38,6 +38,7 @@ import { DeliveryController } from './integrations/delivery/controllers/delivery
 import { DeliveryService } from './integrations/delivery/services/delivery.service';
 import { DeliveryEmailService } from './integrations/delivery/services/delivery-email.service';
 import { DeliveryReminderSchedulerService } from './integrations/delivery/services/delivery-reminder-scheduler.service';
+import { PesadaQueryService } from './integrations/delivery/services/pesada-query.service';
 import { EventManager } from './integrations/event/event.manager';
 import { S3Controller } from './integrations/storage/s3/controllers/s3.controller';
 import { S3Service } from './integrations/storage/s3/services/s3.service';
@@ -145,7 +146,8 @@ export const evoaiController = new EvoaiController(evoaiService, prismaRepositor
 // Delivery Tracking
 const deliveryEmailService = new DeliveryEmailService();
 const deliveryService = new DeliveryService(waMonitor, prismaRepository, configService, deliveryEmailService);
-export const deliveryController = new DeliveryController(deliveryService);
+const pesadaQueryService = new PesadaQueryService(configService, waMonitor);
+export const deliveryController = new DeliveryController(deliveryService, pesadaQueryService);
 export const deliveryReminderScheduler = new DeliveryReminderSchedulerService(prismaRepository, deliveryService);
 
 // Start reminder scheduler

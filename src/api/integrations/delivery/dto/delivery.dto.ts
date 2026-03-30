@@ -49,3 +49,12 @@ export class DeliveryResponseDto {
   createdAt: Date;
   updatedAt: Date;
 }
+
+export class NotifyPesadaDto {
+  idPesada: number;
+}
+
+export class NotifyPesadaTestDto {
+  idPesada: number;
+  testPhone: string;
+}

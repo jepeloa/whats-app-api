@@ -1,13 +1,17 @@
 import { InstanceDto } from '@api/dto/instance.dto';
 import { Logger } from '@config/logger.config';
 
-import { CloseDeliveryDto, CreateDeliveryDto, DeliveryStatusDto } from '../dto/delivery.dto';
+import { CloseDeliveryDto, CreateDeliveryDto, DeliveryStatusDto, NotifyPesadaDto, NotifyPesadaTestDto } from '../dto/delivery.dto';
+import { PesadaQueryService } from '../services/pesada-query.service';
 import { DeliveryService } from '../services/delivery.service';
 
 export class DeliveryController {
   private readonly logger = new Logger('DeliveryController');
 
-  constructor(private readonly deliveryService: DeliveryService) {}
+  constructor(
+    private readonly deliveryService: DeliveryService,
+    private readonly pesadaQueryService: PesadaQueryService,
+  ) {}
 
   /**
    * Create a new delivery tracking
@@ -50,5 +54,15 @@ export class DeliveryController {
    */
   async processMessage(instanceName: string, remoteJid: string, msg: any) {
     await this.deliveryService.processIncomingMessage(instanceName, remoteJid, msg);
+  }
+
+  async notifyPesada(instance: InstanceDto, data: NotifyPesadaDto) {
+    this.logger.info(`Notifying pesada ${data.idPesada} for instance ${instance.instanceName}`);
+    return this.pesadaQueryService.notifyPesada(instance.instanceName, data.idPesada);
+  }
+
+  async notifyPesadaTest(instance: InstanceDto, data: NotifyPesadaTestDto) {
+    this.logger.info(`Test notify pesada ${data.idPesada} to ${data.testPhone} for instance ${instance.instanceName}`);
+    return this.pesadaQueryService.notifyPesada(instance.instanceName, data.idPesada, data.testPhone);
   }
 }

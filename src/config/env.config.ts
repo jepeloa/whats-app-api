@@ -385,6 +385,19 @@ export type Sentry = {
   DSN?: string;
 };
 
+export type SqlServerConnection = {
+  HOST: string;
+  PORT: number;
+  USER: string;
+  PASSWORD: string;
+  DATABASE: string;
+};
+
+export type SqlServer = {
+  PESADAS: SqlServerConnection;
+  SIGO: SqlServerConnection;
+};
+
 export type EventEmitter = {
   MAX_LISTENERS: number;
 };
@@ -427,6 +440,7 @@ export interface Env {
   AUDIO_CONVERTER: AudioConverter;
   FACEBOOK: Facebook;
   SENTRY: Sentry;
+  SQLSERVER: SqlServer;
   EVENT_EMITTER: EventEmitter;
   PRODUCTION?: Production;
 }
@@ -899,6 +913,22 @@ export class ConfigService {
       },
       SENTRY: {
         DSN: process.env?.SENTRY_DSN,
+      },
+      SQLSERVER: {
+        PESADAS: {
+          HOST: process.env?.SQLSERVER_PESADAS_HOST || '',
+          PORT: Number.parseInt(process.env?.SQLSERVER_PESADAS_PORT || '1433'),
+          USER: process.env?.SQLSERVER_PESADAS_USER || '',
+          PASSWORD: process.env?.SQLSERVER_PESADAS_PASSWORD || '',
+          DATABASE: process.env?.SQLSERVER_PESADAS_DATABASE || '',
+        },
+        SIGO: {
+          HOST: process.env?.SQLSERVER_SIGO_HOST || '',
+          PORT: Number.parseInt(process.env?.SQLSERVER_SIGO_PORT || '1433'),
+          USER: process.env?.SQLSERVER_SIGO_USER || '',
+          PASSWORD: process.env?.SQLSERVER_SIGO_PASSWORD || '',
+          DATABASE: process.env?.SQLSERVER_SIGO_DATABASE || '',
+        },
       },
       EVENT_EMITTER: {
         MAX_LISTENERS: Number.parseInt(process.env?.EVENT_EMITTER_MAX_LISTENERS) || 50,

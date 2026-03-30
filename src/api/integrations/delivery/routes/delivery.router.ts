@@ -4,12 +4,14 @@ import { HttpStatus } from '@api/routes/index.router';
 import { deliveryController } from '@api/server.module';
 import { RequestHandler, Router } from 'express';
 
-import { CloseDeliveryDto, CreateDeliveryDto, DeliveryStatusDto } from '../dto/delivery.dto';
+import { CloseDeliveryDto, CreateDeliveryDto, DeliveryStatusDto, NotifyPesadaDto, NotifyPesadaTestDto } from '../dto/delivery.dto';
 import {
   closeDeliverySchema,
   createDeliverySchema,
   deliveryListSchema,
   deliveryStatusSchema,
+  notifyPesadaSchema,
+  notifyPesadaTestSchema,
 } from '../validate/delivery.schema';
 
 export class DeliveryRouter extends RouterBroker {
@@ -76,6 +78,35 @@ export class DeliveryRouter extends RouterBroker {
           schema: deliveryStatusSchema,
           ClassRef: DeliveryStatusDto,
           execute: (instance) => deliveryController.getAudit(instance, { idPesada: req.params.idPesada }),
+        });
+
+        res.status(HttpStatus.OK).json(response);
+      })
+      // Notify pesada (real phone from SQL Server)
+      .post(this.routerPath('notify/:idPesada'), ...guards, async (req, res) => {
+        const response = await this.dataValidate<NotifyPesadaDto>({
+          request: req,
+          schema: notifyPesadaSchema,
+          ClassRef: NotifyPesadaDto,
+          execute: (instance) =>
+            deliveryController.notifyPesada(instance, {
+              idPesada: parseInt(req.params.idPesada, 10),
+            }),
+        });
+
+        res.status(HttpStatus.OK).json(response);
+      })
+      // Notify pesada test (custom phone)
+      .post(this.routerPath('notify-test/:idPesada'), ...guards, async (req, res) => {
+        const response = await this.dataValidate<NotifyPesadaTestDto>({
+          request: req,
+          schema: notifyPesadaTestSchema,
+          ClassRef: NotifyPesadaTestDto,
+          execute: (instance, data) =>
+            deliveryController.notifyPesadaTest(instance, {
+              idPesada: parseInt(req.params.idPesada, 10),
+              testPhone: data.testPhone,
+            }),
         });
 
         res.status(HttpStatus.OK).json(response);
