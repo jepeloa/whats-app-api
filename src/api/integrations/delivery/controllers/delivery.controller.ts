@@ -58,11 +58,68 @@ export class DeliveryController {
 
   async notifyPesada(instance: InstanceDto, data: NotifyPesadaDto) {
     this.logger.info(`Notifying pesada ${data.idPesada} for instance ${instance.instanceName}`);
-    return this.pesadaQueryService.notifyPesada(instance.instanceName, data.idPesada);
+    return this.createDeliveryFromPesada(instance.instanceName, data.idPesada);
   }
 
   async notifyPesadaTest(instance: InstanceDto, data: NotifyPesadaTestDto) {
     this.logger.info(`Test notify pesada ${data.idPesada} to ${data.testPhone} for instance ${instance.instanceName}`);
-    return this.pesadaQueryService.notifyPesada(instance.instanceName, data.idPesada, data.testPhone);
+    return this.createDeliveryFromPesada(instance.instanceName, data.idPesada, data.testPhone);
+  }
+
+  /**
+   * Query SQL Server for pesada data, build a CreateDeliveryDto, and call deliveryService.create()
+   * This ensures a DeliveryTracking record is created so responses are matched correctly.
+   */
+  private async createDeliveryFromPesada(instanceName: string, idPesada: number, testPhone?: string) {
+    const pesada = await this.pesadaQueryService.queryPesada(idPesada);
+    if (!pesada) {
+      throw new Error(`Pesada ${idPesada} no encontrada en SQL Server`);
+    }
+
+    const ubicaciones = await this.pesadaQueryService.queryUbicaciones(pesada.RUCADestino);
+
+    let phoneNumber: string;
+    if (testPhone) {
+      phoneNumber = testPhone;
+    } else {
+      if (!pesada.TelefonoChofer || pesada.TelefonoChofer.trim() === '') {
+        throw new Error(`Pesada ${idPesada}: el chofer no tiene teléfono registrado`);
+      }
+      phoneNumber = this.pesadaQueryService.formatPhoneNumber(pesada.TelefonoChofer);
+    }
+
+    const deliveryLocations = ubicaciones.length > 0
+      ? ubicaciones.map((u, i) => ({
+          nombre: u.ub_nombre,
+          direccion: u.ub_nombre,
+          orden: i + 1,
+        }))
+      : [{
+          nombre: pesada.Destino.trim(),
+          direccion: pesada.Destino.trim(),
+          orden: 1,
+        }];
+
+    const createDto: CreateDeliveryDto = {
+      idPesada: String(idPesada),
+      phoneNumber,
+      choferNombre: pesada.Chofer.trim(),
+      patente: pesada.Patente.trim(),
+      artNombre: pesada.Articulo.trim(),
+      origen: pesada.Deposito.trim(),
+      pesoNeto: pesada.PesoNeto,
+      pesoUn: 'KG',
+      ubicaciones: deliveryLocations,
+      metadata: {
+        rucaDestino: pesada.RUCADestino,
+        comprador: pesada.Comprador?.trim(),
+        transportista: pesada.Transportista?.trim(),
+        acoplado: pesada.Acoplado?.trim(),
+        destino: pesada.Destino?.trim(),
+        source: 'pesada_query',
+      },
+    };
+
+    return this.deliveryService.create(instanceName, createDto);
   }
 }
