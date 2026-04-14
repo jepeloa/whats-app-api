@@ -10,7 +10,7 @@ import OpenAI from 'openai';
 import { CreateDeliveryDto } from '../dto/delivery.dto';
 import { DeliveryEmailService } from './delivery-email.service';
 import { DeliveryPdfService } from './delivery-pdf.service';
-import { PesadaQueryService } from './pesada-query.service';
+import { PesadaQueryService, UbicacionData } from './pesada-query.service';
 
 /**
  * JSON Schema for OpenAI Structured Outputs
@@ -128,9 +128,117 @@ export class DeliveryService {
   private buildInitialMessage(data: CreateDeliveryDto): string {
     const ubicacionesList = data.ubicaciones.map((u, i) => `${i + 1}. ${u.nombre} (${u.direccion})`).join('\n');
 
-    return `Hola ${data.choferNombre}! Registramos en nuestro sistema el traslado con el camión dominio ${data.patente} del producto ${data.artNombre}, desde ${data.origen} a ${data.ubicaciones.length > 1 ? 'las siguientes ubicaciones' : data.ubicaciones[0]?.nombre} por ${data.pesoNeto} ${data.pesoUn}. ¿Podrás confirmarnos la descarga?
+    const filtered = data.metadata?.ubicacionesFiltradas === true;
+    const comentario = data.metadata?.comentarioBalanza;
+    const filterNote = filtered && comentario
+      ? `\n\nNota de balanza: "${comentario}"`
+      : '';
+
+    return `Hola ${data.choferNombre}! Registramos en nuestro sistema el traslado con el camión dominio ${data.patente} del producto ${data.artNombre}, desde ${data.origen} a ${data.ubicaciones.length > 1 ? 'las siguientes ubicaciones' : data.ubicaciones[0]?.nombre} por ${data.pesoNeto} ${data.pesoUn}. ¿Podrás confirmarnos la descarga?${filterNote}
 
 ${data.ubicaciones.length > 1 ? `Ubicaciones de descarga:\n${ubicacionesList}` : ''}`;
+  }
+
+  /**
+   * Use OpenAI to filter locations based on the balance operator's comment.
+   * If the comment is unclear or AI can't determine relevant locations, returns all locations (safe fallback).
+   */
+  async filterLocationsByComment(comment: string, locations: UbicacionData[]): Promise<UbicacionData[]> {
+    if (!this.openaiClient || !comment || locations.length === 0) {
+      return locations;
+    }
+
+    const cleanComment = comment.replace(/\r\n/g, '\n').trim();
+    if (!cleanComment) return locations;
+
+    const locationList = locations.map((l) => `- ID: ${l.ub_id} | Nombre: ${l.ub_nombre}`).join('\n');
+
+    try {
+      const response = await this.openaiClient.chat.completions.create({
+        model: 'gpt-4.1',
+        temperature: 0,
+        response_format: {
+          type: 'json_schema',
+          json_schema: {
+            name: 'location_filter',
+            strict: true,
+            schema: {
+              type: 'object',
+              properties: {
+                filtered_ids: {
+                  type: 'array',
+                  items: { type: 'string' },
+                  description: 'Array of ub_id values that match the comment. Empty array if cannot determine.',
+                },
+                confidence: {
+                  type: 'string',
+                  enum: ['high', 'medium', 'low'],
+                  description: 'Confidence level in the filtering decision.',
+                },
+                reasoning: {
+                  type: 'string',
+                  description: 'Brief explanation of the filtering decision.',
+                },
+              },
+              required: ['filtered_ids', 'confidence', 'reasoning'],
+              additionalProperties: false,
+            },
+          },
+        },
+        messages: [
+          {
+            role: 'system',
+            content: `Eres un asistente que filtra ubicaciones de descarga basándose en el comentario del operador de balanza.
+
+El operador escribe en lenguaje libre, a veces abreviado. Ejemplos:
+- "TOLVA 7-8-9" = hace referencia a TAMBO 7, TAMBO 8, TAMBO 9 (todas sus sub-ubicaciones como silos)
+- "TAMBO 2 SILO 1" = solo TAMBO 2 - Silo 1
+- "ELAB 60% MAIZ PROPIO" = información del producto, NO una ubicación
+- "TODO TAMBO 6" = todas las sub-ubicaciones de TAMBO 6
+
+Reglas:
+1. Devolvé SOLO los ub_id de ubicaciones que el comentario menciona explícitamente.
+2. Si el comentario menciona "TOLVA X" o "TAMBO X", incluí TODAS las sub-ubicaciones de ese tambo/tolva (ej: Silo 1, Silo 2).
+3. Si el comentario NO menciona ubicaciones específicas (solo tiene info de producto, elaboración, etc.), devolvé array vacío.
+4. Si no estás seguro, devolvé array vacío (es mejor mostrar todas que filtrar mal).
+5. Confidence "high" = el comentario claramente nombra ubicaciones. "medium" = probable pero no seguro. "low" = no se puede determinar.`,
+          },
+          {
+            role: 'user',
+            content: `Comentario del operador de balanza:\n"${cleanComment}"\n\nUbicaciones disponibles:\n${locationList}\n\n¿Cuáles ubicaciones corresponden al comentario?`,
+          },
+        ],
+      });
+
+      const content = response.choices[0]?.message?.content;
+      if (!content) return locations;
+
+      const result = JSON.parse(content) as { filtered_ids: string[]; confidence: string; reasoning: string };
+
+      this.logger.info(
+        `filterLocationsByComment: confidence=${result.confidence}, reasoning="${result.reasoning}", filtered=${result.filtered_ids.length}/${locations.length}`,
+      );
+
+      // Only apply filter if confidence is high and we got results
+      if (result.confidence === 'low' || result.filtered_ids.length === 0) {
+        this.logger.info('filterLocationsByComment: low confidence or empty result, returning all locations');
+        return locations;
+      }
+
+      const filtered = locations.filter((l) => result.filtered_ids.includes(l.ub_id));
+
+      // Safety: if filter removed everything, return all
+      if (filtered.length === 0) {
+        this.logger.warn('filterLocationsByComment: filter removed all locations, returning all');
+        return locations;
+      }
+
+      this.logger.info(`filterLocationsByComment: reduced ${locations.length} → ${filtered.length} locations`);
+      return filtered;
+    } catch (error) {
+      this.logger.error(`filterLocationsByComment error: ${error.message}`);
+      return locations; // Safe fallback
+    }
   }
 
   /**

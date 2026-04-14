@@ -16,6 +16,7 @@ export interface PesadaData {
   RUCADestino: number;
   Comprador: string;
   Transportista: string;
+  Comentarios: string | null;
 }
 
 export interface UbicacionData {
@@ -84,7 +85,7 @@ export class PesadaQueryService {
       .request()
       .input('idPesada', sql.Int, idPesada)
       .query(
-        'SELECT TOP 1 IdPesada, Chofer, Patente, Acoplado, Articulo, Deposito, Destino, PesoNeto, TelefonoChofer, RUCADestino, Comprador, Transportista FROM [vistas].[vwPesadasDeSalida] WHERE IdPesada = @idPesada',
+        'SELECT TOP 1 IdPesada, Chofer, Patente, Acoplado, Articulo, Deposito, Destino, PesoNeto, TelefonoChofer, RUCADestino, Comprador, Transportista, Comentarios FROM [vistas].[vwPesadasDeSalida] WHERE IdPesada = @idPesada',
       );
 
     if (result.recordset.length === 0) return null;

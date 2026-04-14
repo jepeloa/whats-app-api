@@ -76,7 +76,19 @@ export class DeliveryController {
       throw new Error(`Pesada ${idPesada} no encontrada en SQL Server`);
     }
 
-    const ubicaciones = await this.pesadaQueryService.queryUbicaciones(pesada.RUCADestino);
+    let ubicaciones = await this.pesadaQueryService.queryUbicaciones(pesada.RUCADestino);
+
+    // Pre-filter locations by balance operator comment using AI
+    const comentario = pesada.Comentarios?.trim() || '';
+    let ubicacionesFiltradas = false;
+    if (comentario && ubicaciones.length > 1) {
+      const originalCount = ubicaciones.length;
+      ubicaciones = await this.deliveryService.filterLocationsByComment(comentario, ubicaciones);
+      ubicacionesFiltradas = ubicaciones.length < originalCount;
+      if (ubicacionesFiltradas) {
+        this.logger.info(`Pesada ${idPesada}: filtered ${originalCount} → ${ubicaciones.length} locations by comment`);
+      }
+    }
 
     let phoneNumber: string;
     if (testPhone) {
@@ -116,6 +128,8 @@ export class DeliveryController {
         transportista: pesada.Transportista?.trim(),
         acoplado: pesada.Acoplado?.trim(),
         destino: pesada.Destino?.trim(),
+        comentarioBalanza: comentario || null,
+        ubicacionesFiltradas,
         source: 'pesada_query',
       },
     };
