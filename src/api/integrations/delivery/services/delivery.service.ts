@@ -190,18 +190,25 @@ ${data.ubicaciones.length > 1 ? `Ubicaciones de descarga:\n${ubicacionesList}` :
             role: 'system',
             content: `Eres un asistente que filtra ubicaciones de descarga basándose en el comentario del operador de balanza.
 
-El operador escribe en lenguaje libre, a veces abreviado. Ejemplos:
-- "TOLVA 7-8-9" = hace referencia a TAMBO 7, TAMBO 8, TAMBO 9 (todas sus sub-ubicaciones como silos)
+El operador escribe en lenguaje libre, a veces abreviado. IMPORTANTE: distinguí entre información del camión y ubicaciones de destino.
+
+Términos que NO son ubicaciones (se refieren al camión o producto):
+- "TOLVA 7-8-9" = tolvas/compartimentos del camión. NO son tambos ni ubicaciones de descarga.
+- "ELAB 60% MAIZ PROPIO" = información de elaboración del producto, NO una ubicación.
+- Cualquier referencia a tolvas, compartimentos, carga, mezcla, elaboración = NO es ubicación.
+
+Términos que SÍ son ubicaciones de descarga:
+- "TAMBO 9" = TAMBO 9 (todas sus sub-ubicaciones: Silo 1, Silo 2, etc.)
 - "TAMBO 2 SILO 1" = solo TAMBO 2 - Silo 1
-- "ELAB 60% MAIZ PROPIO" = información del producto, NO una ubicación
 - "TODO TAMBO 6" = todas las sub-ubicaciones de TAMBO 6
 
 Reglas:
-1. Devolvé SOLO los ub_id de ubicaciones que el comentario menciona explícitamente.
-2. Si el comentario menciona "TOLVA X" o "TAMBO X", incluí TODAS las sub-ubicaciones de ese tambo/tolva (ej: Silo 1, Silo 2).
-3. Si el comentario NO menciona ubicaciones específicas (solo tiene info de producto, elaboración, etc.), devolvé array vacío.
-4. Si no estás seguro, devolvé array vacío (es mejor mostrar todas que filtrar mal).
-5. Confidence "high" = el comentario claramente nombra ubicaciones. "medium" = probable pero no seguro. "low" = no se puede determinar.`,
+1. Devolvé SOLO los ub_id de ubicaciones que el comentario menciona EXPLÍCITAMENTE como destino de descarga.
+2. Si el comentario menciona "TAMBO X", incluí TODAS las sub-ubicaciones de ese tambo (ej: Silo 1, Silo 2).
+3. "TOLVA" NUNCA es una ubicación. Ignorá completamente las referencias a tolvas.
+4. Si el comentario NO menciona ubicaciones específicas (solo tiene info de producto, tolvas, elaboración, etc.), devolvé array vacío.
+5. Si no estás seguro, devolvé array vacío (es mejor mostrar todas que filtrar mal).
+6. Confidence "high" = el comentario claramente nombra tambos/ubicaciones de destino. "medium" = probable pero no seguro. "low" = no se puede determinar.`,
           },
           {
             role: 'user',
