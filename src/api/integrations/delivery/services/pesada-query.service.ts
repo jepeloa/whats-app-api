@@ -145,6 +145,57 @@ export class PesadaQueryService {
   }
 
   /**
+   * Find or create traslado record in SIGO.
+   * If it exists, returns the existing one. If not, creates it from delivery data.
+   */
+  public async findOrCreateTraslado(delivery: any): Promise<{ tras_id: number; tras_ext_id: string; tras_estado: string } | null> {
+    const existing = await this.findTraslado(delivery.idPesada);
+    if (existing) return existing;
+
+    try {
+      this.logger.info(`Creating traslado in SIGO for pesada ${delivery.idPesada}`);
+      const pool = await this.getSigoPool();
+      const metadata = delivery.metadata || {};
+      const choferTel = delivery.remoteJid?.replace('@s.whatsapp.net', '') || '';
+
+      const result = await pool
+        .request()
+        .input('extId', sql.NVarChar(50), delivery.idPesada)
+        .input('extNombre', sql.Char(3), 'SOL')
+        .input('dt', sql.DateTime, delivery.createdAt || new Date())
+        .input('compNombre', sql.NVarChar(250), metadata.comprador || null)
+        .input('origen', sql.NVarChar(250), delivery.origen || null)
+        .input('destino', sql.NVarChar(250), metadata.destino || null)
+        .input('choferNombre', sql.NVarChar(250), delivery.choferNombre || null)
+        .input('choferTel', sql.NVarChar(50), choferTel || null)
+        .input('trNombre', sql.NVarChar(250), metadata.transportista || null)
+        .input('neto', sql.Decimal(18, 2), delivery.pesoNeto || 0)
+        .input('pesoUn', sql.Char(2), (delivery.pesoUn || 'KG').substring(0, 2))
+        .input('patente1', sql.NVarChar(20), delivery.patente || null)
+        .input('patente2', sql.NVarChar(20), metadata.acoplado || null)
+        .input('artNombre', sql.NVarChar(250), delivery.artNombre || null)
+        .input('compRuca', sql.NVarChar(50), metadata.rucaDestino ? String(metadata.rucaDestino) : null)
+        .input('estado', sql.NVarChar(50), 'pendiente')
+        .query(
+          `INSERT INTO traslado (tras_ext_id, tras_ext_nombre, tras_dt, tras_comp_nombre, tras_origen, tras_destino,
+            tras_chofer_nombre, tras_chofer_tel, tras_tr_nombre, tras_neto, tras_peso_un,
+            tras_patente_1, tras_patente_2, tras_art_nombre, tras_comp_ruca, tras_estado)
+           OUTPUT INSERTED.tras_id
+           VALUES (@extId, @extNombre, @dt, @compNombre, @origen, @destino,
+            @choferNombre, @choferTel, @trNombre, @neto, @pesoUn,
+            @patente1, @patente2, @artNombre, @compRuca, @estado)`,
+        );
+
+      const trasId = result.recordset[0].tras_id;
+      this.logger.info(`Created traslado ${trasId} in SIGO for pesada ${delivery.idPesada}`);
+      return { tras_id: trasId, tras_ext_id: delivery.idPesada, tras_estado: 'pendiente' };
+    } catch (error) {
+      this.logger.error(`Error creating traslado for pesada ${delivery.idPesada}: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
    * Look up ub_id from ubicaciones table by name
    */
   public async findUbicacionIdByName(nombre: string): Promise<string | null> {

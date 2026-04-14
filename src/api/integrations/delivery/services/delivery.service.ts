@@ -1201,14 +1201,14 @@ Respondé siempre en español, breve y amigable.`;
     }
 
     try {
-      // Find the traslado record in SIGO by IdPesada
-      const traslado = await this.pesadaQueryService.findTraslado(delivery.idPesada);
+      // Find or create the traslado record in SIGO
+      const traslado = await this.pesadaQueryService.findOrCreateTraslado(delivery);
       if (!traslado) {
-        this.logger.warn(`Traslado not found in SIGO for pesada ${delivery.idPesada}, skipping write-back`);
+        this.logger.warn(`Could not find or create traslado in SIGO for pesada ${delivery.idPesada}, skipping write-back`);
         return;
       }
 
-      this.logger.info(`Found traslado ${traslado.tras_id} for pesada ${delivery.idPesada}, saving results to SIGO`);
+      this.logger.info(`Using traslado ${traslado.tras_id} for pesada ${delivery.idPesada}, saving results to SIGO`);
 
       // Build location data with ub_id lookup
       const locationData: Array<{ nombre: string; kilosDescargados: number | null; ubId: string | null }> = [];
