@@ -1195,11 +1195,47 @@ Respondé siempre en español, breve y amigable.`;
           }
 
           await this.checkDeliveryComplete(freshDelivery.id, instanceName);
+          await this.maybeSendKilosMaxAsk(freshDelivery.id, instanceName);
         }
       }
     } catch (error) {
       this.logger.error(`Error processing action: ${error.message}`);
     }
+  }
+
+  /**
+   * If the driver has registered all available kilos (descargados sum >= pesoNeto)
+   * BUT there are still pending locations, ask once if he wants to close the pesada.
+   * If all locations are already delivered we don't ask here (maybeSendPreCloseAsk
+   * handles that case).
+   */
+  private async maybeSendKilosMaxAsk(deliveryId: string, instanceName: string) {
+    const fresh = await this.prismaRepository.deliveryTracking.findUnique({
+      where: { id: deliveryId },
+      include: { locations: { orderBy: { orden: 'asc' } } },
+    });
+    if (!fresh || fresh.status === 'completed') return;
+
+    const pending = fresh.locations.filter((l) => l.status === 'pending');
+    if (pending.length === 0) return; // all delivered → other helper handles cierre
+
+    const totalDescargado = fresh.locations
+      .filter((l) => l.kilosDescargados)
+      .reduce((sum, l) => sum + (l.kilosDescargados || 0), 0);
+
+    if (totalDescargado < fresh.pesoNeto) return; // still kilos to go
+
+    const alreadyAsked = await this.prismaRepository.deliveryMessage.findFirst({
+      where: { deliveryTrackingId: deliveryId, messageType: 'kilos_max_ask' },
+    });
+    if (alreadyAsked) return;
+
+    const askMsg = `Ya registramos los ${fresh.pesoNeto.toLocaleString('es-AR')} ${fresh.pesoUn} totales de la pesada. Si no vas a registrar más descargas, respondé *"cerrar"* para finalizar. Si descargaste en otro punto, contámelo.`;
+    await this.sendWhatsAppMessage(instanceName, fresh.remoteJid, askMsg);
+    await this.logMessage(deliveryId, 'assistant', askMsg, 'kilos_max_ask');
+    this.logger.info(
+      `Kilos-max ask sent for ${fresh.idPesada} (registrados ${totalDescargado} >= total ${fresh.pesoNeto}; ${pending.length} pendientes).`,
+    );
   }
 
   /**
