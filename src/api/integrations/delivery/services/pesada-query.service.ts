@@ -9,13 +9,27 @@ export interface PesadaData {
   Patente: string;
   Acoplado: string;
   Articulo: string;
+  CodigoArticulo: string | null;
   Deposito: string;
   Destino: string;
   PesoNeto: number;
+  PesoBruto: number | null;
+  Tara: number | null;
+  KM: number | null;
   TelefonoChofer: string;
   RUCADestino: number;
   Comprador: string;
   Transportista: string;
+  CUITComprador: string | null;
+  CUITChofer: string | null;
+  CUITTransportista: string | null;
+  NroPuntoVentaPesadaSalida: number | null;
+  NroPesadaSalida: number | null;
+  LetraPesadaSalida: string | null;
+  TipoComprobante: string | null;
+  CTG: string | number | null;
+  FechaInicioEstadoCTG: Date | null;
+  FechaVencimientoCTG: Date | null;
   Comentarios: string | null;
 }
 
@@ -85,7 +99,15 @@ export class PesadaQueryService {
       .request()
       .input('idPesada', sql.Int, idPesada)
       .query(
-        'SELECT TOP 1 IdPesada, Chofer, Patente, Acoplado, Articulo, Deposito, Destino, PesoNeto, TelefonoChofer, RUCADestino, Comprador, Transportista, Comentarios FROM [vistas].[vwPesadasDeSalida] WHERE IdPesada = @idPesada',
+        `SELECT TOP 1
+            IdPesada, Chofer, Patente, Acoplado, Articulo, CodigoArticulo, Deposito, Destino,
+            PesoNeto, PesoBruto, Tara, KM, TelefonoChofer, RUCADestino, Comprador, Transportista,
+            CUITComprador, CUITChofer, CUITTransportista,
+            NroPuntoVentaPesadaSalida, NroPesadaSalida, LetraPesadaSalida,
+            TipoComprobante, CTG, FechaInicioEstadoCTG, FechaVencimientoCTG,
+            CAST(Comentarios AS NVARCHAR(MAX)) AS Comentarios
+          FROM [vistas].[vwPesadasDeSalida]
+          WHERE IdPesada = @idPesada`,
       );
 
     if (result.recordset.length === 0) return null;
@@ -159,32 +181,80 @@ export class PesadaQueryService {
       const metadata = delivery.metadata || {};
       const choferTel = delivery.remoteJid?.replace('@s.whatsapp.net', '') || '';
 
+      const toDate = (v: any): Date | null => {
+        if (!v) return null;
+        const d = v instanceof Date ? v : new Date(v);
+        return isNaN(d.getTime()) ? null : d;
+      };
+      const toNum = (v: any): number | null => {
+        if (v === null || v === undefined || v === '') return null;
+        const n = Number(v);
+        return isNaN(n) ? null : n;
+      };
+      const toStr = (v: any, max?: number): string | null => {
+        if (v === null || v === undefined) return null;
+        const s = String(v).trim();
+        if (s === '') return null;
+        return max ? s.substring(0, max) : s;
+      };
+
       const result = await pool
         .request()
         .input('extId', sql.NVarChar(50), delivery.idPesada)
         .input('extNombre', sql.Char(3), 'SOL')
         .input('dt', sql.DateTime, delivery.createdAt || new Date())
+        .input('compCuit', sql.NVarChar(50), toStr(metadata.cuitComprador, 50))
         .input('compNombre', sql.NVarChar(250), metadata.comprador || null)
         .input('origen', sql.NVarChar(250), delivery.origen || null)
         .input('destino', sql.NVarChar(250), metadata.destino || null)
+        .input('choferCuit', sql.NVarChar(50), toStr(metadata.cuitChofer, 50))
         .input('choferNombre', sql.NVarChar(250), delivery.choferNombre || null)
         .input('choferTel', sql.NVarChar(50), choferTel || null)
+        .input('trCuit', sql.NVarChar(50), toStr(metadata.cuitTransportista, 50))
         .input('trNombre', sql.NVarChar(250), metadata.transportista || null)
+        .input('tara', sql.Decimal(18, 2), toNum(metadata.tara))
+        .input('bruto', sql.Decimal(18, 2), toNum(metadata.pesoBruto))
         .input('neto', sql.Decimal(18, 2), delivery.pesoNeto || 0)
         .input('pesoUn', sql.Char(2), (delivery.pesoUn || 'KG').substring(0, 2))
         .input('patente1', sql.NVarChar(20), delivery.patente || null)
         .input('patente2', sql.NVarChar(20), metadata.acoplado || null)
+        .input('km', sql.Decimal(18, 2), toNum(metadata.km))
+        .input('puntoVtaPes', sql.Int, toNum(metadata.nroPuntoVentaPesadaSalida))
+        .input('compVtaPes', sql.Int, toNum(metadata.nroPesadaSalida))
+        .input('compVtaLetra', sql.Char(1), toStr(metadata.letraPesadaSalida, 1))
+        .input('codArt', sql.NVarChar(20), toStr(metadata.codigoArticulo, 20))
         .input('artNombre', sql.NVarChar(250), delivery.artNombre || null)
+        .input('ctg', sql.NVarChar(50), toStr(metadata.ctg, 50))
+        .input('dtIniCtg', sql.DateTime, toDate(metadata.fechaInicioEstadoCTG))
+        .input('dtFinCtg', sql.DateTime, toDate(metadata.fechaVencimientoCTG))
+        .input('tipoComp', sql.NVarChar(10), toStr(metadata.tipoComprobante, 10))
         .input('compRuca', sql.NVarChar(50), metadata.rucaDestino ? String(metadata.rucaDestino) : null)
+        .input('obs', sql.NVarChar(250), toStr(metadata.comentarioBalanza, 250))
         .input('estado', sql.NVarChar(50), 'pendiente')
         .query(
-          `INSERT INTO traslado (tras_ext_id, tras_ext_nombre, tras_dt, tras_comp_nombre, tras_origen, tras_destino,
-            tras_chofer_nombre, tras_chofer_tel, tras_tr_nombre, tras_neto, tras_peso_un,
-            tras_patente_1, tras_patente_2, tras_art_nombre, tras_comp_ruca, tras_estado)
+          `INSERT INTO traslado (
+              tras_ext_id, tras_ext_nombre, tras_dt,
+              tras_comp_cuit, tras_comp_nombre, tras_origen, tras_destino,
+              tras_chofer_cuit, tras_chofer_nombre, tras_chofer_tel,
+              tras_tr_cuit, tras_tr_nombre,
+              tras_tara, tras_bruto, tras_neto, tras_peso_un,
+              tras_patente_1, tras_patente_2, tras_km,
+              tras_punto_vta_pes, tras_comp_vta_pes, tras_comp_vta_letra,
+              tras_cod_art, tras_art_nombre,
+              tras_ctg, tras_dt_ini_ctg, tras_dt_fin_ctg,
+              tras_tipo_comp, tras_comp_ruca, tras_obs, tras_estado)
            OUTPUT INSERTED.tras_id
-           VALUES (@extId, @extNombre, @dt, @compNombre, @origen, @destino,
-            @choferNombre, @choferTel, @trNombre, @neto, @pesoUn,
-            @patente1, @patente2, @artNombre, @compRuca, @estado)`,
+           VALUES (
+              @extId, @extNombre, @dt,
+              @compCuit, @compNombre, @origen, @destino,
+              @choferCuit, @choferNombre, @choferTel,
+              @trCuit, @trNombre,
+              @tara, @bruto, @neto, @pesoUn,
+              @patente1, @patente2, @km,
+              @puntoVtaPes, @compVtaPes, @compVtaLetra,
+              @codArt, @artNombre,
+              @ctg, @dtIniCtg, @dtFinCtg,
+              @tipoComp, @compRuca, @obs, @estado)`,
         );
 
       const trasId = result.recordset[0].tras_id;
