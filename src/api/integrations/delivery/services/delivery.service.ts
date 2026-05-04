@@ -1104,6 +1104,15 @@ Respondé siempre en español, breve y amigable.`;
           if (action.observacion) {
             await this.addObservacion(freshDelivery.id, `${location.nombre} (corrección): ${action.observacion}`);
           }
+
+          // If the updated location has no GPS yet, ask the driver for it
+          if (location.latitude == null || location.longitude == null) {
+            const gpsMsg = `📍 Ya registré la corrección en "${location.nombre}". ¿Podés compartirme la ubicación GPS de ese punto? Tocá el clip 📎 → Ubicación → Enviar ubicación actual.`;
+            await this.sendWhatsAppMessage(instanceName, freshDelivery.remoteJid, gpsMsg);
+            await this.logMessage(freshDelivery.id, 'assistant', gpsMsg, 'gps_ask_after_update', {
+              ubicacion: location.nombre,
+            });
+          }
         }
         return;
       }
