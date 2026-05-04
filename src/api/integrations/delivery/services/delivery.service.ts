@@ -54,10 +54,6 @@ const DELIVERY_RESPONSE_SCHEMA = {
               type: ['number', 'null'],
               description: 'Kilos descargados. -1 significa "el resto". Null si no aplica.',
             },
-            kilos_perdidos: {
-              type: ['number', 'null'],
-              description: 'Kilos perdidos en esta ubicación (rotura, derrame, accidente). Se descuentan del total. Null si no hay pérdida.',
-            },
             observacion: {
               type: ['string', 'null'],
               description: 'Observación sobre problemas, incidentes o notas. Null si no hay.',
@@ -79,7 +75,6 @@ interface AIResponse {
     action: 'confirm_delivery' | 'update_delivery' | 'report_issue' | 'request_location' | 'chat' | 'query_pending' | 'close_delivery';
     ubicacion: string | null;
     kilos: number | null;
-    kilos_perdidos?: number | null;
     observacion: string | null;
   }>;
 }
@@ -268,14 +263,11 @@ Reglas:
       .map((l) => `- ${l.nombre}: ${l.direccion} (${l.kilosDescargados?.toLocaleString('es-AR') || '?'} kg)`)
       .join('\n');
 
-    // Calcular kilos ya descargados (incluye perdidos para no excederse del total)
+    // Calcular kilos ya descargados
     const kilosDescargados = delivery.locations
       .filter((l) => l.status === 'delivered' && l.kilosDescargados)
       .reduce((sum, l) => sum + (l.kilosDescargados || 0), 0);
-    const kilosPerdidos = delivery.locations
-      .filter((l: any) => l.kilosPerdidos)
-      .reduce((sum: number, l: any) => sum + (l.kilosPerdidos || 0), 0);
-    const kilosRestantes = delivery.pesoNeto - kilosDescargados - kilosPerdidos;
+    const kilosRestantes = delivery.pesoNeto - kilosDescargados;
 
     const firstName = delivery.choferNombre.split(' ')[0];
 
@@ -283,7 +275,6 @@ Reglas:
 
 PESO TOTAL CARGADO: ${delivery.pesoNeto.toLocaleString('es-AR')} ${delivery.pesoUn}
 KILOS YA DESCARGADOS: ${kilosDescargados.toLocaleString('es-AR')} kg
-KILOS PERDIDOS: ${kilosPerdidos.toLocaleString('es-AR')} kg
 KILOS RESTANTES: ${kilosRestantes.toLocaleString('es-AR')} kg
 
 UBICACIONES PENDIENTES:
@@ -308,9 +299,6 @@ REGLAS CRÍTICAS:
 13. Si el camionero responde solo con un NÚMERO (ej: "5000") después de que preguntaste los kilos, SIEMPRE generá confirm_delivery para la ubicación que estás preguntando.
 14. Si el camionero dice "2" o un número de ubicación sin kilos, preguntale cuántos kilos descargó ahí.
 15. CIERRE: Si el camionero dice "listo", "ya terminé", "cierro", "no voy a más", "terminé todo", "ya está" → usá "close_delivery". Esto cierra la pesada y marca las ubicaciones pendientes como no descargadas.
-15a. NUNCA cierres automáticamente solo porque KILOS RESTANTES llegó a 0. Si los kilos restantes son 0 PERO quedan ubicaciones pendientes, NO uses close_delivery: respondé confirmando la última descarga + request_location y preguntá "Ya no quedan kilos por descargar. ¿Cerramos la pesada o vas a registrar otra descarga?". Esperá la respuesta del camionero antes de generar close_delivery.
-15b. ANTES de generar close_delivery, si hay alguna ubicación entregada SIN GPS, ofrecé una sola vez: "📍 Antes de cerrar, ¿podés mandarme la ubicación de la última descarga?". Si el camionero ya respondió que no o pidió cerrar igual, generá close_delivery sin insistir.
-15c. PÉRDIDAS: Si el camionero dice "perdí X kg" / "se cayeron Y kg" / "derramé Z" en una ubicación, registralos en kilos_perdidos (NO los sumes a kilos). Ejemplo: "descargué 5000 y perdí 200" → kilos:5000, kilos_perdidos:200. El sistema descuenta los perdidos del total para que el camionero no tenga que justificar esos kg.
 16. Si TODAS las ubicaciones ya están entregadas y el camionero responde (por ejemplo "ok", "no", "listo"), respondé brevemente. El sistema se encarga de cerrar.
 17. Si el camionero pregunta "¿a dónde más puedo ir?" o "¿qué ubicaciones tengo?", AHÍ SÍ listale las ubicaciones pendientes. Solo cuando él lo pide.
 
@@ -335,8 +323,8 @@ Camionero: "1 3000kg"
 → actions: [{"action":"confirm_delivery","ubicacion":"[nombre ubicación 1]","kilos":3000,"observacion":null}, {"action":"request_location","ubicacion":"[nombre ubicación 1]","kilos":null,"observacion":null}]
 
 Camionero: "2 perdí la mitad, descargue 500"
-→ message: "Registré 500 kg descargados y 500 kg perdidos en [ubicación 2]. 📍 ¿Podés compartirme la ubicación?"
-→ actions: [{"action":"confirm_delivery","ubicacion":"[nombre ubicación 2]","kilos":500,"kilos_perdidos":500,"observacion":"Pérdida parcial de carga"}, {"action":"request_location","ubicacion":"[nombre ubicación 2]","kilos":null,"observacion":null}]
+→ message: "Registré 500 kg y el incidente en [ubicación 2]. 📍 ¿Podés compartirme la ubicación?"
+→ actions: [{"action":"confirm_delivery","ubicacion":"[nombre ubicación 2]","kilos":500,"observacion":"Pérdida parcial de carga"}, {"action":"request_location","ubicacion":"[nombre ubicación 2]","kilos":null,"observacion":null}]
 
 Camionero: "en 2 no descargue, estaba cerrado"
 → message: "Entendido ${firstName}, registré que estaba cerrado. ¿Descargaste en algún otro punto?"
@@ -347,17 +335,8 @@ Camionero: "Entregué el resto en planta sur"
 → actions: [{"action":"confirm_delivery","ubicacion":"Planta Sur","kilos":-1,"observacion":null}, {"action":"request_location","ubicacion":"Planta Sur","kilos":null,"observacion":null}]
 
 Camionero: "listo ya terminé" / "no voy a más" / "cierro"
-→ (Si quedó alguna entrega sin GPS) message: "📍 Antes de cerrar, ¿querés mandarme la ubicación de la última descarga?"
-→ actions: [{"action":"chat","ubicacion":null,"kilos":null,"observacion":null}]
-
-Camionero: "no, cerralo igual" / "sí cerrá" (después de la pregunta de cierre)
 → message: "Entendido ${firstName}, cerramos la pesada. ¡Gracias por tu trabajo!"
 → actions: [{"action":"close_delivery","ubicacion":null,"kilos":null,"observacion":null}]
-
-(Contexto: KILOS RESTANTES = 0 y aún hay ubicaciones pendientes)
-Camionero: confirma una descarga que agota los kilos
-→ message: "¡Perfecto ${firstName}! Confirmados los kilos. Ya no quedan kilos por descargar. ¿Cerramos la pesada o vas a registrar otra descarga? 📍 ¿Podés compartirme la ubicación?"
-→ actions: [{"action":"confirm_delivery","ubicacion":"...","kilos":-1,"observacion":null}, {"action":"request_location","ubicacion":"...","kilos":null,"observacion":null}]
 
 Camionero: "me equivoqué, en Deposito Norte eran 8000"
 → message: "Listo ${firstName}, corregí a 8.000 kg en Depósito Norte."
@@ -689,6 +668,10 @@ IMPORTANTE:
 
     this.logger.info(`Processing message from ${remoteJid} for pesada ${delivery.idPesada}: ${content}`);
 
+    // Detect if all locations were already delivered BEFORE processing this message
+    // If so, this message is the driver's response to the GPS request
+    const allAlreadyDelivered = delivery.locations.every((l) => l.status === 'delivered');
+
     // Update status to in_progress if still pending
     if (delivery.status === 'pending') {
       await this.prismaRepository.deliveryTracking.update({
@@ -781,10 +764,23 @@ IMPORTANTE:
       await this.processSingleAction(delivery, action, instanceName);
     }
 
-    // Closure now requires either an explicit close_delivery action from the AI
-    // (handled inside processSingleAction with forceComplete=true) or for the driver
-    // to respond to the pre-close prompt sent by checkDeliveryComplete. We no longer
-    // auto-complete on any text response after all locations are delivered.
+    // If all locations were already delivered before this message,
+    // this was the driver's response to the GPS request (text = skip GPS).
+    // After AI processing (which may include corrections), force-complete if still all delivered.
+    if (allAlreadyDelivered) {
+      const freshDelivery = await this.prismaRepository.deliveryTracking.findUnique({
+        where: { id: delivery.id },
+        include: { locations: { orderBy: { orden: 'asc' } } },
+      });
+
+      if (freshDelivery && freshDelivery.status !== 'completed') {
+        const stillAllDelivered = freshDelivery.locations.every((l) => l.status === 'delivered');
+        if (stillAllDelivered) {
+          this.logger.info(`Force-completing ${freshDelivery.idPesada} after driver response to GPS request.`);
+          await this.checkDeliveryComplete(delivery.id, instanceName, true);
+        }
+      }
+    }
   }
 
   /**
@@ -1008,10 +1004,7 @@ Respondé siempre en español, breve y amigable.`;
       const kilosYaDescargados = freshDelivery.locations
         .filter((l) => l.status === 'delivered' && l.kilosDescargados)
         .reduce((sum, l) => sum + (l.kilosDescargados || 0), 0);
-      const kilosYaPerdidos = freshDelivery.locations
-        .filter((l: any) => l.kilosPerdidos)
-        .reduce((sum: number, l: any) => sum + (l.kilosPerdidos || 0), 0);
-      const kilosRestantes = freshDelivery.pesoNeto - kilosYaDescargados - kilosYaPerdidos;
+      const kilosRestantes = freshDelivery.pesoNeto - kilosYaDescargados;
 
       // Handle close_delivery — driver is done, close pending locations with 0 kg
       if (action.action === 'close_delivery') {
@@ -1130,25 +1123,21 @@ Respondé siempre en español, breve y amigable.`;
               status: 'delivered',
               deliveredAt: new Date(),
               kilosDescargados: kilosToDeliver || null,
-              kilosPerdidos: action.kilos_perdidos ?? null,
               notes: action.observacion || null,
             },
           });
 
           this.logger.info(
-            `Location ${location.nombre} marked as delivered for pesada ${freshDelivery.idPesada} with ${kilosToDeliver || '?'} kg${action.kilos_perdidos ? ` (perdidos: ${action.kilos_perdidos} kg)` : ''}`,
+            `Location ${location.nombre} marked as delivered for pesada ${freshDelivery.idPesada} with ${kilosToDeliver || '?'} kg`,
           );
 
           const kilosText = kilosToDeliver ? ` (${kilosToDeliver.toLocaleString('es-AR')} kg)` : '';
-          const perdidosText = action.kilos_perdidos
-            ? ` (perdidos: ${action.kilos_perdidos.toLocaleString('es-AR')} kg)`
-            : '';
           await this.logMessage(
             freshDelivery.id,
             'system',
-            `Ubicación "${location.nombre}" marcada como entregada${kilosText}${perdidosText}.`,
+            `Ubicación "${location.nombre}" marcada como entregada${kilosText}.`,
             'action',
-            { action: 'confirm_delivery', ubicacion: location.nombre, kilos: kilosToDeliver, kilos_perdidos: action.kilos_perdidos ?? null },
+            { action: 'confirm_delivery', ubicacion: location.nombre, kilos: kilosToDeliver },
           );
 
           if (action.observacion) {
@@ -1237,61 +1226,9 @@ Respondé siempre en español, breve y amigable.`;
     const pendingLocations = delivery.locations.filter((l) => l.status === 'pending');
 
     if (pendingLocations.length === 0) {
-      // All locations delivered. Before auto-closing, ask the driver for confirmation
-      // and offer to send GPS for the last delivery if missing.
-      // Only auto-complete when forceComplete=true (driver said "cerrá" / explicit close).
-      if (!forceComplete) {
-        // Check if we already asked (avoid spamming on every message)
-        const alreadyAsked = await this.prismaRepository.deliveryMessage.findFirst({
-          where: {
-            deliveryTrackingId: deliveryId,
-            messageType: 'pre_close_prompt',
-          },
-          orderBy: { timestamp: 'desc' },
-        });
+      // All locations delivered — complete (GPS is optional, never blocks completion)
 
-        if (alreadyAsked) {
-          this.logger.info(`Pre-close prompt already sent for ${delivery.idPesada}, waiting for driver response.`);
-          return;
-        }
-
-        const lastDelivered = delivery.locations
-          .filter((l: any) => l.status === 'delivered')
-          .sort((a: any, b: any) => {
-            const at = a.deliveredAt ? new Date(a.deliveredAt).getTime() : 0;
-            const bt = b.deliveredAt ? new Date(b.deliveredAt).getTime() : 0;
-            return bt - at;
-          })[0] as any;
-
-        const lastWithoutGps = lastDelivered && lastDelivered.latitude == null;
-        const totalDescargado = delivery.locations
-          .filter((l) => l.status === 'delivered' && l.kilosDescargados)
-          .reduce((sum, l) => sum + (l.kilosDescargados || 0), 0);
-        const totalPerdido = delivery.locations
-          .filter((l: any) => l.kilosPerdidos)
-          .reduce((sum: number, l: any) => sum + (l.kilosPerdidos || 0), 0);
-        const restantes = delivery.pesoNeto - totalDescargado - totalPerdido;
-
-        let prompt: string;
-        if (lastWithoutGps) {
-          prompt =
-            restantes <= 0
-              ? `Ya registramos todas las descargas (${totalDescargado.toLocaleString('es-AR')} kg). 📍 Antes de cerrar, ¿podés mandarme la ubicación de *${lastDelivered.nombre}*? Si no, respondé "cerrar" y damos por finalizada la pesada.`
-              : `Por ahora registramos ${totalDescargado.toLocaleString('es-AR')} kg en todas las paradas que me pasaste. 📍 ¿Querés mandarme la ubicación de *${lastDelivered.nombre}*? Si no vas a descargar en otro lugar, respondé "cerrar".`;
-        } else {
-          prompt =
-            restantes <= 0
-              ? `Ya no quedan kilos por descargar (${totalDescargado.toLocaleString('es-AR')} kg registrados). ¿Cerramos la pesada o vas a registrar otra descarga? Respondé "cerrar" para finalizar.`
-              : `Registramos ${totalDescargado.toLocaleString('es-AR')} kg en las paradas informadas. ¿Vas a registrar otra descarga o cerramos la pesada? Respondé "cerrar" para finalizar.`;
-        }
-
-        await this.sendWhatsAppMessage(instanceName, delivery.remoteJid, prompt);
-        await this.logMessage(deliveryId, 'assistant', prompt, 'pre_close_prompt');
-        this.logger.info(`Pre-close confirmation sent for ${delivery.idPesada}; awaiting driver response.`);
-        return;
-      }
-
-      // forceComplete=true — driver confirmed close OR called close_delivery explicitly
+      // All locations delivered — complete (GPS collected, or forced, or kilos=0)
       const confirmedAt = new Date();
       await this.prismaRepository.deliveryTracking.update({
         where: { id: deliveryId },

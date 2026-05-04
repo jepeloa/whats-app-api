@@ -817,7 +817,6 @@ model DeliveryLocation {
   orden              Int                    @default(0) @db.Integer
   status             DeliveryLocationStatus @default(pending)
   kilosDescargados   Float?                 @db.DoublePrecision
-  kilosPerdidos      Float?                 @db.DoublePrecision
   deliveredAt        DateTime?              @db.Timestamp
   latitude           Float?                 @db.DoublePrecision
   longitude          Float?                 @db.DoublePrecision
