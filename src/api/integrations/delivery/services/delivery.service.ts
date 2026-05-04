@@ -301,6 +301,7 @@ REGLAS CRÍTICAS:
 15. CIERRE: Si el camionero dice "listo", "ya terminé", "cierro", "no voy a más", "terminé todo", "ya está" → usá "close_delivery". Esto cierra la pesada y marca las ubicaciones pendientes como no descargadas.
 16. Si TODAS las ubicaciones ya están entregadas y el camionero responde (por ejemplo "ok", "no", "listo"), respondé brevemente. El sistema se encarga de cerrar.
 17. Si el camionero pregunta "¿a dónde más puedo ir?" o "¿qué ubicaciones tengo?", AHÍ SÍ listale las ubicaciones pendientes. Solo cuando él lo pide.
+18. Si en un turno anterior YA listaste las pesadas/ubicaciones pendientes y el camionero responde con frases cortas o de cierre ("ok", "dale", "listo", "cerrá", "ya está", "gracias"), NO repitas el listado. Usá "close_delivery" si quiere cerrar, o "chat" con una respuesta breve. La acción "query_pending" solo va cuando el camionero PREGUNTA explícitamente por sus pendientes.
 
 CHAT GENERAL:
 - Preguntas no relacionadas con la entrega → action "chat".
@@ -736,11 +737,22 @@ IMPORTANTE:
     await this.logMessage(delivery.id, 'assistant', aiResponse.message, 'text', actionsForAudit);
 
     // First pass: handle query_pending to build full message
+    // Dedup guard: if we already sent a query_pending listing in the last 3 messages, skip the append
+    const recentAssistantMsgs = messages.filter((m) => m.role === 'assistant').slice(-3);
+    const alreadyListedRecently = recentAssistantMsgs.some((m) => m.messageType === 'query_pending');
     for (const action of aiResponse.actions) {
       if (action.action === 'query_pending') {
+        if (alreadyListedRecently) {
+          this.logger.info(
+            `Skipping query_pending listing for pesada ${delivery.idPesada} — already listed recently`,
+          );
+          continue;
+        }
         const pendingInfo = await this.buildPendingDeliveriesInfo(remoteJid, instance.id);
         if (pendingInfo) {
           aiResponse.message = aiResponse.message ? `${aiResponse.message}\n\n${pendingInfo}` : pendingInfo;
+          // Persist the appended listing so the AI sees it in next turns and doesn't re-list
+          await this.logMessage(delivery.id, 'assistant', pendingInfo, 'query_pending');
         }
       }
     }
