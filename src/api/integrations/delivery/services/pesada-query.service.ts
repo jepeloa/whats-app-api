@@ -168,15 +168,12 @@ export class PesadaQueryService {
   }
 
   /**
-   * Find or create traslado record in SIGO.
-   * If it exists, returns the existing one. If not, creates it from delivery data.
+   * Find or create traslado record in SIGO (idempotent upsert).
+   * If it exists, UPDATEs all fields (preserving tras_estado/tras_dt_cierre).
+   * If not, creates it from delivery data.
    */
   public async findOrCreateTraslado(delivery: any): Promise<{ tras_id: number; tras_ext_id: string; tras_estado: string } | null> {
-    const existing = await this.findTraslado(delivery.idPesada);
-    if (existing) return existing;
-
     try {
-      this.logger.info(`Creating traslado in SIGO for pesada ${delivery.idPesada}`);
       const pool = await this.getSigoPool();
       const metadata = delivery.metadata || {};
       const choferTel = delivery.remoteJid?.replace('@s.whatsapp.net', '') || '';
@@ -198,7 +195,8 @@ export class PesadaQueryService {
         return max ? s.substring(0, max) : s;
       };
 
-      const result = await pool
+      // Bind all common params on a single request (used for both INSERT and UPDATE)
+      const buildRequest = () => pool
         .request()
         .input('extId', sql.NVarChar(50), delivery.idPesada)
         .input('extNombre', sql.Char(3), 'SOL')
@@ -229,7 +227,51 @@ export class PesadaQueryService {
         .input('dtFinCtg', sql.DateTime, toDate(metadata.fechaVencimientoCTG))
         .input('tipoComp', sql.NVarChar(10), toStr(metadata.tipoComprobante, 10))
         .input('compRuca', sql.NVarChar(50), metadata.rucaDestino ? String(metadata.rucaDestino) : null)
-        .input('obs', sql.NVarChar(250), toStr(metadata.comentarioBalanza, 250))
+        .input('obs', sql.NVarChar(250), toStr(metadata.comentarioBalanza, 250));
+
+      const existing = await this.findTraslado(delivery.idPesada);
+      if (existing) {
+        this.logger.info(`Updating traslado ${existing.tras_id} in SIGO for pesada ${delivery.idPesada}`);
+        await buildRequest()
+          .input('trasId', sql.Int, existing.tras_id)
+          .query(
+            `UPDATE traslado SET
+                tras_ext_nombre = @extNombre,
+                tras_dt = @dt,
+                tras_comp_cuit = @compCuit,
+                tras_comp_nombre = @compNombre,
+                tras_origen = @origen,
+                tras_destino = @destino,
+                tras_chofer_cuit = @choferCuit,
+                tras_chofer_nombre = @choferNombre,
+                tras_chofer_tel = @choferTel,
+                tras_tr_cuit = @trCuit,
+                tras_tr_nombre = @trNombre,
+                tras_tara = @tara,
+                tras_bruto = @bruto,
+                tras_neto = @neto,
+                tras_peso_un = @pesoUn,
+                tras_patente_1 = @patente1,
+                tras_patente_2 = @patente2,
+                tras_km = @km,
+                tras_punto_vta_pes = @puntoVtaPes,
+                tras_comp_vta_pes = @compVtaPes,
+                tras_comp_vta_letra = @compVtaLetra,
+                tras_cod_art = @codArt,
+                tras_art_nombre = @artNombre,
+                tras_ctg = @ctg,
+                tras_dt_ini_ctg = @dtIniCtg,
+                tras_dt_fin_ctg = @dtFinCtg,
+                tras_tipo_comp = @tipoComp,
+                tras_comp_ruca = @compRuca,
+                tras_obs = @obs
+              WHERE tras_id = @trasId`,
+          );
+        return existing;
+      }
+
+      this.logger.info(`Creating traslado in SIGO for pesada ${delivery.idPesada}`);
+      const result = await buildRequest()
         .input('estado', sql.NVarChar(50), 'pendiente')
         .query(
           `INSERT INTO traslado (
@@ -261,7 +303,7 @@ export class PesadaQueryService {
       this.logger.info(`Created traslado ${trasId} in SIGO for pesada ${delivery.idPesada}`);
       return { tras_id: trasId, tras_ext_id: delivery.idPesada, tras_estado: 'pendiente' };
     } catch (error) {
-      this.logger.error(`Error creating traslado for pesada ${delivery.idPesada}: ${error.message}`);
+      this.logger.error(`Error upserting traslado for pesada ${delivery.idPesada}: ${error.message}`);
       return null;
     }
   }
