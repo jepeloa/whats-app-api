@@ -1226,6 +1226,37 @@ Respondé siempre en español, breve y amigable.`;
     const pendingLocations = delivery.locations.filter((l) => l.status === 'pending');
 
     if (pendingLocations.length === 0) {
+      // Before closing: if the last delivery has no GPS, ask the driver ONCE.
+      // If he ignores it (no GPS in next message), close on the next pass as before.
+      if (!forceComplete) {
+        const alreadyAsked = await this.prismaRepository.deliveryMessage.findFirst({
+          where: {
+            deliveryTrackingId: deliveryId,
+            messageType: 'pre_close_gps_ask',
+          },
+        });
+
+        if (!alreadyAsked) {
+          const lastDelivered: any = delivery.locations
+            .filter((l: any) => l.status === 'delivered')
+            .sort((a: any, b: any) => {
+              const at = a.deliveredAt ? new Date(a.deliveredAt).getTime() : 0;
+              const bt = b.deliveredAt ? new Date(b.deliveredAt).getTime() : 0;
+              return bt - at;
+            })[0];
+
+          if (lastDelivered && lastDelivered.latitude == null) {
+            const askMsg = `📍 Antes de cerrar, ¿podés mandarme la ubicación de *${lastDelivered.nombre}*? Si no la tenés, no hay problema, respondé cualquier cosa y cerramos la pesada.`;
+            await this.sendWhatsAppMessage(instanceName, delivery.remoteJid, askMsg);
+            await this.logMessage(deliveryId, 'assistant', askMsg, 'pre_close_gps_ask');
+            this.logger.info(
+              `Pre-close GPS ask sent for ${delivery.idPesada} (last location: ${lastDelivered.nombre}). Awaiting driver response.`,
+            );
+            return;
+          }
+        }
+      }
+
       // All locations delivered — complete (GPS is optional, never blocks completion)
 
       // All locations delivered — complete (GPS collected, or forced, or kilos=0)
