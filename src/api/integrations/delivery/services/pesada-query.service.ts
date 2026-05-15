@@ -400,7 +400,7 @@ export class PesadaQueryService {
       .request()
       .input('trasId', sql.Int, trasId)
       .input('diferencia', sql.Decimal(18, 2), diferencia)
-      .input('tipoDiferencia', sql.NVarChar(500), tipoDiferencia ? tipoDiferencia.substring(0, 500) : null)
+      .input('tipoDiferencia', sql.NVarChar(50), tipoDiferencia ? tipoDiferencia.substring(0, 50) : null)
       .query('UPDATE traslado SET tras_diferencia = @diferencia, tras_tipo_diferencia = @tipoDiferencia WHERE tras_id = @trasId');
   }
 

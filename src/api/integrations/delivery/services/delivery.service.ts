@@ -1482,20 +1482,25 @@ Respondé siempre en español, breve y amigable.`;
       const pesoNeto = Number(delivery.pesoNeto) || 0;
       const diferencia = Math.max(0, pesoNeto - totalDescargado);
       if (diferencia > 0 || pesoNeto > 0) {
-        // Collect justifications: per-location notes + delivery.observaciones
+        // Build a short category label (NVarChar(50) limit in SIGO)
         const motivos: string[] = [];
         for (const loc of delivery.locations) {
-          if (loc.notes && String(loc.notes).trim()) {
-            motivos.push(`${loc.nombre}: ${String(loc.notes).trim()}`);
+          if (loc.notes && String(loc.notes).trim() && loc.notes !== 'No se informó descarga en esta ubicación') {
+            motivos.push(String(loc.notes).trim());
           }
         }
         if (delivery.observaciones && String(delivery.observaciones).trim()) {
-          motivos.push(`General: ${String(delivery.observaciones).trim()}`);
+          motivos.push(String(delivery.observaciones).trim());
         }
-        let tipoDiferencia: string | null = motivos.length > 0 ? motivos.join(' | ') : null;
-        if (diferencia > 0 && !tipoDiferencia) {
+
+        let tipoDiferencia: string | null = null;
+        if (motivos.length > 0) {
+          // Take the first reason (most representative), truncated to fit
+          tipoDiferencia = motivos[0].substring(0, 50);
+        } else if (diferencia > 0) {
           tipoDiferencia = 'no informa';
         }
+
         await this.pesadaQueryService.updateTrasladoDiferencia(traslado.tras_id, diferencia, tipoDiferencia);
         this.logger.info(
           `Traslado ${traslado.tras_id}: diferencia=${diferencia} kg, tipo="${tipoDiferencia || ''}"`,
