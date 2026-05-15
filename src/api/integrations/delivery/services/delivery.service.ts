@@ -1750,7 +1750,17 @@ Respondé siempre en español, breve y amigable.`;
     }
 
     if (delivery.status === 'completed' || delivery.status === 'not_delivered') {
-      throw new Error(`Pesada ${idPesada} is already closed with status: ${delivery.status}`);
+      // Idempotent re-sync: re-run SIGO write so newly-added fields (e.g. tras_diferencia) get populated
+      this.logger.info(`Pesada ${idPesada} already closed (${delivery.status}). Re-running SIGO sync.`);
+      await this.saveToSigo(delivery);
+      return {
+        delivery: {
+          idPesada,
+          status: delivery.status,
+          resynced: true,
+          reason,
+        },
+      };
     }
 
     const deliveredLocations = delivery.locations.filter((l) => l.status === 'delivered');
@@ -1781,6 +1791,9 @@ Respondé siempre en español, breve y amigable.`;
 
     // Send email
     await this.emailService.sendDeliveryCompletedEmail({ ...delivery, status: newStatus }, newStatus);
+
+    // Save results to SIGO (descarga + bitacora + diferencia + estado)
+    await this.saveToSigo({ ...delivery, status: newStatus });
 
     this.logger.info(`Delivery ${idPesada} closed manually with status ${newStatus}`);
 
