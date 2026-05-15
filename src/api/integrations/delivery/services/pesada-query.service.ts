@@ -392,6 +392,19 @@ export class PesadaQueryService {
   }
 
   /**
+   * Update traslado difference (kilos no entregados) and reason
+   */
+  public async updateTrasladoDiferencia(trasId: number, diferencia: number, tipoDiferencia: string | null): Promise<void> {
+    const pool = await this.getSigoPool();
+    await pool
+      .request()
+      .input('trasId', sql.Int, trasId)
+      .input('diferencia', sql.Decimal(18, 2), diferencia)
+      .input('tipoDiferencia', sql.NVarChar(500), tipoDiferencia ? tipoDiferencia.substring(0, 500) : null)
+      .query('UPDATE traslado SET tras_diferencia = @diferencia, tras_tipo_diferencia = @tipoDiferencia WHERE tras_id = @trasId');
+  }
+
+  /**
    * Save the WhatsApp conversation log to wsapp_log
    * Deletes existing rows for this traslado first (idempotent on re-creation)
    */

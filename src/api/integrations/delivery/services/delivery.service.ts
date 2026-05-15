@@ -1478,6 +1478,30 @@ Respondé siempre en español, breve y amigable.`;
       const obsText = `Cerrado via WhatsApp. ${ubicacionesConCarga} ubicacion(es), ${totalDescargado} kg descargados`;
       await this.pesadaQueryService.saveBitacora(traslado.tras_id, 'cierre_whatsapp', obsText);
 
+      // UPDATE diferencia (kilos no entregados) + tipo (motivo)
+      const pesoNeto = Number(delivery.pesoNeto) || 0;
+      const diferencia = Math.max(0, pesoNeto - totalDescargado);
+      if (diferencia > 0 || pesoNeto > 0) {
+        // Collect justifications: per-location notes + delivery.observaciones
+        const motivos: string[] = [];
+        for (const loc of delivery.locations) {
+          if (loc.notes && String(loc.notes).trim()) {
+            motivos.push(`${loc.nombre}: ${String(loc.notes).trim()}`);
+          }
+        }
+        if (delivery.observaciones && String(delivery.observaciones).trim()) {
+          motivos.push(`General: ${String(delivery.observaciones).trim()}`);
+        }
+        let tipoDiferencia: string | null = motivos.length > 0 ? motivos.join(' | ') : null;
+        if (diferencia > 0 && !tipoDiferencia) {
+          tipoDiferencia = 'no informa';
+        }
+        await this.pesadaQueryService.updateTrasladoDiferencia(traslado.tras_id, diferencia, tipoDiferencia);
+        this.logger.info(
+          `Traslado ${traslado.tras_id}: diferencia=${diferencia} kg, tipo="${tipoDiferencia || ''}"`,
+        );
+      }
+
       // UPDATE traslado estado
       await this.pesadaQueryService.updateTrasladoEstado(traslado.tras_id, 'completado');
 
