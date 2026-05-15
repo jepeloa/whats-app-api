@@ -253,10 +253,17 @@ Reglas:
    * Supports structured outputs — no manual JSON parsing needed
    */
   private buildSystemPrompt(delivery: DeliveryTracking & { locations: any[] }): string {
-    const pendingLocations = delivery.locations
-      .filter((l) => l.status === 'pending')
-      .map((l) => `- ${l.nombre}: ${l.direccion}`)
-      .join('\n');
+    // Principal locations (from balance operator comment filter). The rest are "secundarias".
+    const metadata = (delivery.metadata as any) || {};
+    const principalNames: string[] = Array.isArray(metadata.locacionesPrincipales)
+      ? metadata.locacionesPrincipales.map((n: string) => String(n).toLowerCase().trim())
+      : [];
+    const isPrincipal = (l: any) =>
+      principalNames.length === 0 || principalNames.includes(String(l.nombre).toLowerCase().trim());
+
+    const pendingAll = delivery.locations.filter((l) => l.status === 'pending');
+    const pendingPrincipal = pendingAll.filter(isPrincipal).map((l) => `- ${l.nombre}: ${l.direccion}`).join('\n');
+    const pendingSecundaria = pendingAll.filter((l) => !isPrincipal(l)).map((l) => `- ${l.nombre}: ${l.direccion}`).join('\n');
 
     const deliveredLocations = delivery.locations
       .filter((l) => l.status === 'delivered')
@@ -277,8 +284,11 @@ PESO TOTAL CARGADO: ${delivery.pesoNeto.toLocaleString('es-AR')} ${delivery.peso
 KILOS YA DESCARGADOS: ${kilosDescargados.toLocaleString('es-AR')} kg
 KILOS RESTANTES: ${kilosRestantes.toLocaleString('es-AR')} kg
 
-UBICACIONES PENDIENTES:
-${pendingLocations || 'Ninguna'}
+UBICACIONES PRINCIPALES (pendientes — sugeridas por el comentario del balancero):
+${pendingPrincipal || 'Ninguna'}
+
+UBICACIONES SECUNDARIAS (pendientes — disponibles si el camionero menciona alguna):
+${pendingSecundaria || 'Ninguna'}
 
 UBICACIONES ENTREGADAS:
 ${deliveredLocations || 'Ninguna'}
@@ -302,6 +312,7 @@ REGLAS CRÍTICAS:
 16. Si TODAS las ubicaciones ya están entregadas y el camionero responde (por ejemplo "ok", "no", "listo"), respondé brevemente. El sistema se encarga de cerrar.
 17. Si el camionero pregunta "¿a dónde más puedo ir?" o "¿qué ubicaciones tengo?", AHÍ SÍ listale las ubicaciones pendientes. Solo cuando él lo pide.
 18. Si en un turno anterior YA listaste las pesadas/ubicaciones pendientes y el camionero responde con frases cortas o de cierre ("ok", "dale", "listo", "cerrá", "ya está", "gracias"), NO repitas el listado. Usá "close_delivery" si quiere cerrar, o "chat" con una respuesta breve. La acción "query_pending" solo va cuando el camionero PREGUNTA explícitamente por sus pendientes.
+19. PRINCIPALES vs SECUNDARIAS: Las "UBICACIONES PRINCIPALES" son las sugeridas por el balancero según el comentario de la pesada y son lo más probable. Las "SECUNDARIAS" están disponibles pero NO las sugieras: úsalas SOLO si el camionero las menciona explícitamente (por nombre o por número). Cuando el camionero pregunte "¿a dónde voy?", listá primero las PRINCIPALES y mencioná que también puede descargar en otras si fuera necesario. Para confirm_delivery / update_delivery aceptá tanto principales como secundarias por igual: si el camionero dice un nombre que coincide con alguna, usala.
 
 CHAT GENERAL:
 - Preguntas no relacionadas con la entrega → action "chat".

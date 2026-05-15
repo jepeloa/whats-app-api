@@ -76,17 +76,21 @@ export class DeliveryController {
       throw new Error(`Pesada ${idPesada} no encontrada en SQL Server`);
     }
 
-    let ubicaciones = await this.pesadaQueryService.queryUbicaciones(pesada.RUCADestino);
+    const ubicaciones = await this.pesadaQueryService.queryUbicaciones(pesada.RUCADestino);
 
-    // Pre-filter locations by balance operator comment using AI
+    // Pre-filter locations by balance operator comment using AI to determine PRINCIPAL set
+    // (secondaries = the rest). All locations are still saved, just classified.
     const comentario = pesada.Comentarios?.trim() || '';
+    let principalNames: string[] = ubicaciones.map((u) => u.ub_nombre);
     let ubicacionesFiltradas = false;
     if (comentario && ubicaciones.length > 1) {
-      const originalCount = ubicaciones.length;
-      ubicaciones = await this.deliveryService.filterLocationsByComment(comentario, ubicaciones);
-      ubicacionesFiltradas = ubicaciones.length < originalCount;
-      if (ubicacionesFiltradas) {
-        this.logger.info(`Pesada ${idPesada}: filtered ${originalCount} → ${ubicaciones.length} locations by comment`);
+      const filtradas = await this.deliveryService.filterLocationsByComment(comentario, ubicaciones);
+      if (filtradas.length > 0 && filtradas.length < ubicaciones.length) {
+        principalNames = filtradas.map((u) => u.ub_nombre);
+        ubicacionesFiltradas = true;
+        this.logger.info(
+          `Pesada ${idPesada}: principales=${principalNames.length}/${ubicaciones.length} (resto = secundarias)`,
+        );
       }
     }
 
@@ -144,6 +148,7 @@ export class DeliveryController {
         fechaVencimientoCTG: pesada.FechaVencimientoCTG || null,
         comentarioBalanza: comentario || null,
         ubicacionesFiltradas,
+        locacionesPrincipales: principalNames,
         source: 'pesada_query',
       },
     };
