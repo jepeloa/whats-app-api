@@ -126,17 +126,39 @@ export class DeliveryService {
    * Build the initial message for the truck driver
    */
   private buildInitialMessage(data: CreateDeliveryDto): string {
-    const ubicacionesList = data.ubicaciones.map((u, i) => `${i + 1}. ${u.nombre} (${u.direccion})`).join('\n');
-
     const filtered = data.metadata?.ubicacionesFiltradas === true;
     const comentario = data.metadata?.comentarioBalanza;
     const filterNote = filtered && comentario
       ? `\n\nNota de balanza: "${comentario}"`
       : '';
 
-    return `Hola ${data.choferNombre}! Registramos en nuestro sistema el traslado con el camión dominio ${data.patente} del producto ${data.artNombre}, desde ${data.origen} a ${data.ubicaciones.length > 1 ? 'las siguientes ubicaciones' : data.ubicaciones[0]?.nombre} por ${data.pesoNeto} ${data.pesoUn}. ¿Podrás confirmarnos la descarga?${filterNote}
+    // Split into principales / secundarias using metadata.locacionesPrincipales
+    const principalNames: string[] = Array.isArray(data.metadata?.locacionesPrincipales)
+      ? (data.metadata!.locacionesPrincipales as string[]).map((n) => String(n).toLowerCase().trim())
+      : [];
+    const isPrincipal = (nombre: string) =>
+      principalNames.length === 0 || principalNames.includes(String(nombre).toLowerCase().trim());
 
-${data.ubicaciones.length > 1 ? `Ubicaciones de descarga:\n${ubicacionesList}` : ''}`;
+    const principales = data.ubicaciones.filter((u) => isPrincipal(u.nombre));
+    const secundarias = data.ubicaciones.filter((u) => !isPrincipal(u.nombre));
+
+    // Number sequentially across both sections
+    let counter = 0;
+    const principalesList = principales.map((u) => `${++counter}. ${u.nombre} (${u.direccion})`).join('\n');
+    const secundariasList = secundarias.map((u) => `${++counter}. ${u.nombre} (${u.direccion})`).join('\n');
+
+    let listSection = '';
+    if (data.ubicaciones.length > 1) {
+      if (secundarias.length === 0) {
+        listSection = `\n\nUbicaciones de descarga:\n${principalesList}`;
+      } else {
+        listSection = `\n\nUbicaciones de descarga:\n${principalesList}\n\nUbicaciones alternativas:\n${secundariasList}`;
+      }
+    }
+
+    const destinoDesc = data.ubicaciones.length > 1 ? 'las siguientes ubicaciones' : data.ubicaciones[0]?.nombre;
+
+    return `Hola ${data.choferNombre}! Registramos en nuestro sistema el traslado con el camión dominio ${data.patente} del producto ${data.artNombre}, desde ${data.origen} a ${destinoDesc} por ${data.pesoNeto} ${data.pesoUn}. ¿Podrás confirmarnos la descarga?${filterNote}${listSection}`;
   }
 
   /**
