@@ -90,6 +90,13 @@ export class DeliveryReminderSchedulerService {
               confirmedAt: new Date(),
             },
           });
+
+          // Activar la siguiente pesada encolada para este camionero, si la hay
+          await this.deliveryService.activateNextQueued(
+            delivery.Instance.name,
+            delivery.remoteJid,
+            delivery.instanceId,
+          );
           continue;
         }
 

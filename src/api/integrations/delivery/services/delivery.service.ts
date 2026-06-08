@@ -122,7 +122,15 @@ export class DeliveryService {
   /**
    * Build the initial message for the truck driver
    */
-  private buildInitialMessage(data: CreateDeliveryDto): string {
+  private buildInitialMessage(data: {
+    choferNombre: string;
+    patente: string;
+    artNombre: string;
+    origen: string;
+    pesoNeto: number;
+    pesoUn: string;
+    ubicaciones: { nombre: string; direccion: string }[];
+  }): string {
     const ubicacionesList = data.ubicaciones.map((u, i) => `${i + 1}. ${u.nombre} (${u.direccion})`).join('\n');
 
     return `Hola ${data.choferNombre}! Registramos en nuestro sistema el traslado con el camión dominio ${data.patente} del producto ${data.artNombre}, desde ${data.origen} a ${data.ubicaciones.length > 1 ? 'las siguientes ubicaciones' : data.ubicaciones[0]?.nombre} por ${data.pesoNeto} ${data.pesoUn}. ¿Podrás confirmarnos la descarga?
@@ -264,22 +272,6 @@ IMPORTANTE:
 
     const remoteJid = this.formatToJid(data.phoneNumber);
 
-    // Check if there's already an active delivery for this phone number
-    // Active = pending or in_progress (partial/completed/not_delivered means closed)
-    const existingActive = await this.prismaRepository.deliveryTracking.findFirst({
-      where: {
-        remoteJid,
-        instanceId: instance.id,
-        status: { in: ['pending', 'in_progress'] },
-      },
-    });
-
-    if (existingActive) {
-      throw new Error(
-        `El camionero ${data.phoneNumber} ya tiene un pedido activo (Pesada #${existingActive.idPesada}). Debe cerrarse antes de crear uno nuevo.`,
-      );
-    }
-
     // Check if this idPesada already exists for this instance
     const existingPesada = await this.prismaRepository.deliveryTracking.findUnique({
       where: {
@@ -294,46 +286,74 @@ IMPORTANTE:
       throw new Error(`La pesada #${data.idPesada} ya existe en esta instancia`);
     }
 
-    // Create delivery tracking with locations
-    const delivery = await this.prismaRepository.deliveryTracking.create({
-      data: {
-        idPesada: data.idPesada,
-        remoteJid,
-        choferNombre: data.choferNombre,
-        patente: data.patente,
-        artNombre: data.artNombre,
-        origen: data.origen,
-        pesoNeto: data.pesoNeto,
-        pesoUn: data.pesoUn,
-        status: 'pending',
-        emailRecipients: data.emailRecipients?.join(',') || process.env.DELIVERY_EMAIL_TO || '',
-        metadata: data.metadata || {},
-        instanceId: instance.id,
-        locations: {
-          create: data.ubicaciones.map((u, index) => ({
-            nombre: u.nombre,
-            direccion: u.direccion,
-            orden: u.orden ?? index + 1,
-            status: 'pending',
-          })),
+    // Only ONE active conversation (pending/in_progress) per driver at a time.
+    // Extra pesadas (tolva dividida, varios viajes) se encolan con estado
+    // 'queued' y se activan automáticamente al cerrarse la pesada anterior.
+    // El chequeo + creación van en una transacción para evitar que dos webhooks
+    // simultáneos arranquen dos conversaciones a la vez.
+    const { delivery, queued } = await this.prismaRepository.$transaction(async (tx) => {
+      const existingActive = await tx.deliveryTracking.findFirst({
+        where: {
+          remoteJid,
+          instanceId: instance.id,
+          status: { in: ['pending', 'in_progress'] },
         },
-      },
-      include: {
-        locations: true,
-      },
+      });
+
+      const shouldQueue = !!existingActive;
+
+      const created = await tx.deliveryTracking.create({
+        data: {
+          idPesada: data.idPesada,
+          remoteJid,
+          choferNombre: data.choferNombre,
+          patente: data.patente,
+          artNombre: data.artNombre,
+          origen: data.origen,
+          pesoNeto: data.pesoNeto,
+          pesoUn: data.pesoUn,
+          status: shouldQueue ? 'queued' : 'pending',
+          emailRecipients: data.emailRecipients?.join(',') || process.env.DELIVERY_EMAIL_TO || '',
+          metadata: data.metadata || {},
+          instanceId: instance.id,
+          locations: {
+            create: data.ubicaciones.map((u, index) => ({
+              nombre: u.nombre,
+              direccion: u.direccion,
+              orden: u.orden ?? index + 1,
+              status: 'pending',
+            })),
+          },
+        },
+        include: {
+          locations: true,
+        },
+      });
+
+      return { delivery: created, queued: shouldQueue };
     });
 
-    // Log initial system message for audit
-    await this.logMessage(delivery.id, 'system', `Pesada creada. Enviando mensaje inicial al camionero.`);
+    if (queued) {
+      // Don't message the driver yet — wait until the previous pesada closes.
+      await this.logMessage(
+        delivery.id,
+        'system',
+        'Pesada encolada. El camionero tiene otra pesada activa; se enviará el mensaje inicial al cerrarse la anterior.',
+      );
+      this.logger.info(`Delivery ${delivery.idPesada} encolada para ${remoteJid} (camionero ocupado)`);
+    } else {
+      // Log initial system message for audit
+      await this.logMessage(delivery.id, 'system', `Pesada creada. Enviando mensaje inicial al camionero.`);
 
-    // Send initial message to the driver
-    const initialMessage = this.buildInitialMessage(data);
-    await this.sendWhatsAppMessage(instanceName, remoteJid, initialMessage);
+      // Send initial message to the driver
+      const initialMessage = this.buildInitialMessage(data);
+      await this.sendWhatsAppMessage(instanceName, remoteJid, initialMessage);
 
-    // Log the sent message
-    await this.logMessage(delivery.id, 'assistant', initialMessage);
+      // Log the sent message
+      await this.logMessage(delivery.id, 'assistant', initialMessage);
 
-    this.logger.info(`Delivery ${delivery.id} created successfully for pesada ${data.idPesada}`);
+      this.logger.info(`Delivery ${delivery.id} created successfully for pesada ${data.idPesada}`);
+    }
 
     return {
       delivery: {
@@ -351,6 +371,57 @@ IMPORTANTE:
         createdAt: delivery.createdAt,
       },
     };
+  }
+
+  /**
+   * Activate the next queued pesada for a driver, if any.
+   * Called whenever a delivery reaches a terminal state so the driver only
+   * receives the next pesada after closing the current one. No-op if the
+   * driver still has an active conversation or has nothing queued.
+   */
+  async activateNextQueued(instanceName: string, remoteJid: string, instanceId: string): Promise<void> {
+    // Don't activate while the driver still has an active conversation.
+    const stillActive = await this.prismaRepository.deliveryTracking.findFirst({
+      where: {
+        remoteJid,
+        instanceId,
+        status: { in: ['pending', 'in_progress'] },
+      },
+    });
+    if (stillActive) return;
+
+    // Pick the oldest queued pesada (FIFO).
+    const next = await this.prismaRepository.deliveryTracking.findFirst({
+      where: {
+        remoteJid,
+        instanceId,
+        status: 'queued',
+      },
+      orderBy: { createdAt: 'asc' },
+      include: { locations: { orderBy: { orden: 'asc' } } },
+    });
+    if (!next) return;
+
+    await this.prismaRepository.deliveryTracking.update({
+      where: { id: next.id },
+      data: { status: 'pending', lastMessageAt: new Date() },
+    });
+
+    const initialMessage = this.buildInitialMessage({
+      choferNombre: next.choferNombre,
+      patente: next.patente,
+      artNombre: next.artNombre,
+      origen: next.origen,
+      pesoNeto: next.pesoNeto,
+      pesoUn: next.pesoUn,
+      ubicaciones: next.locations.map((l) => ({ nombre: l.nombre, direccion: l.direccion })),
+    });
+
+    await this.logMessage(next.id, 'system', 'Pesada encolada activada. Enviando mensaje inicial al camionero.');
+    await this.sendWhatsAppMessage(instanceName, next.remoteJid, initialMessage);
+    await this.logMessage(next.id, 'assistant', initialMessage);
+
+    this.logger.info(`Pesada encolada ${next.idPesada} activada para ${remoteJid}`);
   }
 
   /**
@@ -814,7 +885,7 @@ Respondé siempre en español, breve y amigable.`;
       where: {
         remoteJid,
         instanceId,
-        status: { in: ['pending', 'in_progress'] },
+        status: { in: ['pending', 'in_progress', 'queued'] },
       },
       include: { locations: { orderBy: { orden: 'asc' } } },
     });
@@ -1160,6 +1231,9 @@ Respondé siempre en español, breve y amigable.`;
 
       // Send completion email
       await this.emailService.sendDeliveryCompletedEmail(delivery, 'completed');
+
+      // Activar la siguiente pesada encolada para este camionero, si la hay
+      await this.activateNextQueued(instanceName, delivery.remoteJid, delivery.instanceId);
     }
   }
 
@@ -1421,6 +1495,9 @@ Respondé siempre en español, breve y amigable.`;
 
     this.logger.info(`Delivery ${idPesada} closed manually with status ${newStatus}`);
 
+    // Activar la siguiente pesada encolada para este camionero, si la hay
+    await this.activateNextQueued(instanceName, delivery.remoteJid, delivery.instanceId);
+
     return {
       delivery: {
         idPesada,
@@ -1527,6 +1604,12 @@ Respondé siempre en español, breve y amigable.`;
 
       // Send email notification
       await this.emailService.sendDeliveryCompletedEmail({ ...delivery, status: newStatus }, newStatus);
+
+      // Si la pesada quedó cerrada, activar la siguiente encolada (si la hay).
+      // Si volvió a 'pending' (el chofer nunca habló), sigue siendo la activa.
+      if (newStatus !== 'pending') {
+        await this.activateNextQueued(instanceName, delivery.remoteJid, delivery.instanceId);
+      }
 
       return;
     }

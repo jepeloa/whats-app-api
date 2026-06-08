@@ -768,6 +768,7 @@ model EvoaiSetting {
 // ==========================================
 
 enum DeliveryStatus {
+  queued        // Encolada: el chofer tiene otra pesada activa, espera turno
   pending       // Camionero nunca contestó
   in_progress   // Conversación activa
   partial       // Algunas ubicaciones entregadas, recordatorios agotados
